@@ -1,0 +1,10 @@
+[package]
+name = "rvst-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Host-independent contracts for Rust audio plugins"
+
+[dependencies]
+serde.workspace = true
