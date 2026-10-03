@@ -1,0 +1,16 @@
+[package]
+name = "rvst-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Real-time utilities, diagnostics and reproducible offline replay for RVST"
+
+[dependencies]
+rvst-core = { path = "../rvst-core", version = "0.1.0" }
+serde.workspace = true
+serde_json.workspace = true
+rtrb = "0.4"
+
+[dev-dependencies]
+rvst-test = { path = "../rvst-test", version = "0.1.0" }

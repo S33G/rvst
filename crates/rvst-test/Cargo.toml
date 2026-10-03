@@ -1,0 +1,10 @@
+[package]
+name = "rvst-test"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Offline plugin harness and audio-thread allocation assertions"
+
+[dependencies]
+rvst-core = { path = "../rvst-core", version = "0.1.0" }
