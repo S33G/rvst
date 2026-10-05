@@ -1,0 +1,28 @@
+version = 1
+name = "Light"
+dark = false
+background = "#edf1f7"
+panel = "#ffffff"
+text = "#132137"
+muted = "#476079"
+accent = "#005a9c"
+border = "#acbdcf"
+error = "#af1736"
+spacing = 12.0
+corner_radius = 8
+
+header_artwork = "logo"
+
+[typography]
+body_size = 15.0
+heading_size = 26.0
+monospace_size = 13.0
+font_family = "proportional"
+
+[meter]
+height = 20.0
+show_decibels = true
+
+[[assets]]
+id = "logo"
+kind = "image"

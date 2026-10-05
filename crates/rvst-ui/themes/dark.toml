@@ -1,0 +1,28 @@
+version = 1
+name = "Dark"
+dark = true
+background = "#121820"
+panel = "#1c2633"
+text = "#f3f7ff"
+muted = "#92a8c4"
+accent = "#62c6f4"
+border = "#36485f"
+error = "#ff6f6f"
+spacing = 12.0
+corner_radius = 8
+
+header_artwork = "logo"
+
+[typography]
+body_size = 15.0
+heading_size = 26.0
+monospace_size = 13.0
+font_family = "proportional"
+
+[meter]
+height = 20.0
+show_decibels = true
+
+[[assets]]
+id = "logo"
+kind = "image"
