@@ -1,0 +1,77 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>RVST — Live Inspector</title>
+<style>
+:root{color-scheme:dark;--bg:#101619;--panel:#182126;--line:#2b3b43;--ink:#e4eef0;--muted:#91a7af;--teal:#6ae1cb;--orange:#ffb469}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px ui-monospace,SFMono-Regular,Consolas,monospace}header{padding:24px 30px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between}h1{font-size:19px;margin:0;letter-spacing:3px}h1 span{color:var(--teal)}small{color:var(--muted)}main{padding:24px 30px;max-width:1700px;margin:auto}.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:20px 0}.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:18px}.value{font-size:25px;margin-top:10px}.toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin:20px 0}input,select,button{font:inherit;background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:5px;padding:10px}input[type=search]{flex:1}label{display:flex;align-items:center;gap:7px}input[type=checkbox]{accent-color:var(--teal)}#parameters th:first-child{width:45%}#parameters th:nth-child(2){width:30%}#parameters th:nth-child(3){width:25%}button{cursor:pointer}button:hover{border-color:var(--teal)}#status{color:var(--teal)}table{width:100%;border-collapse:collapse;table-layout:fixed}th{text-align:left;color:var(--muted);font-weight:normal}th,td{padding:10px;border-bottom:1px solid var(--line);vertical-align:top;overflow-wrap:anywhere}th:nth-child(1){width:110px}th:nth-child(2){width:80px}th:nth-child(3){width:140px}.warn{color:var(--orange)}.error{color:#ff8795}.debug,.trace{color:var(--muted)}pre{white-space:pre-wrap;font-size:12px;color:var(--muted)}details{margin-top:18px}#subtitle{margin-top:9px;color:var(--muted)}@media(max-width:720px){.cards{grid-template-columns:repeat(2,1fr)}main,header{padding:16px}.toolbar{flex-wrap:wrap}th:nth-child(3){width:80px}}
+</style><header><div><h1><span>RVST</span> / LIVE INSPECTOR</h1><div id="subtitle">Connecting to native plugin…</div></div><span id="status">Connecting</span></header>
+<main><small>LIVE NATIVE INSTANCE · LOCAL CONNECTION · NO AUDIO RUNS IN THIS PAGE</small><section class="cards"><div class="card">Callbacks<div class="value" id="callbacks">—</div></div><div class="card">Maximum callback<div class="value" id="maximum">—</div></div><div class="card">Deadline misses<div class="value" id="misses">—</div></div><div class="card">Dropped log events<div class="value" id="dropped">—</div></div></section>
+<p><small id="timing">Waiting for callback timings…</small></p><details open><summary>Live parameters</summary><table id="parameters"><thead><tr><th>Parameter</th><th>Value</th><th>Range</th></tr></thead><tbody id="parameter-values"></tbody></table><small id="parameter-count"></small></details>
+<div class="toolbar"><input id="filter" type="search" aria-label="Filter logs" placeholder="Filter target or message…"><select id="level" aria-label="Log level"><option value="all">All levels</option><option>info</option><option>warn</option><option>error</option><option>debug</option></select><button id="pause">Pause view</button><button id="clear">Clear view</button><label><input id="console-echo" type="checkbox">Echo new logs to DevTools</label></div>
+<table><thead><tr><th>Time</th><th>Level</th><th>Target</th><th>Plugin event</th></tr></thead><tbody id="logs"></tbody></table><details><summary>State and metrics snapshot</summary><pre id="snapshot">{}</pre></details><p><small>Open Chrome DevTools to inspect requests and this UI. Native Rust breakpoints use LLDB/GDB; pausing native DSP may pause the DAW.</small></p></main>
+<script>
+const token=location.hash.slice(1);
+let cursor=0, events=[], paused=false, echoWindow=0, echoCount=0, echoSkipped=0;
+const $=id=>document.getElementById(id);
+function render(){
+  if(paused)return;
+  const filter=$('filter').value.toLowerCase(), level=$('level').value;
+  const fragment=document.createDocumentFragment();
+  for(const event of events.filter(e=>(level==='all'||e.level===level)&&(`${e.target} ${e.message} ${JSON.stringify(e.data)}`).toLowerCase().includes(filter)).slice(-250).reverse()){
+    const row=document.createElement('tr');row.className=event.level;
+    for(const value of [new Date(event.unix_ms).toLocaleTimeString(),event.level,event.target,event.message]){
+      const cell=document.createElement('td');cell.textContent=value;row.appendChild(cell);
+    }
+    if(event.data){const data=document.createElement('pre');data.textContent=JSON.stringify(event.data);row.lastChild.appendChild(data);}
+    fragment.appendChild(row);
+  }
+  $('logs').replaceChildren(fragment);
+}
+function renderParameters(parameters){
+  const fragment=document.createDocumentFragment(), values=Array.isArray(parameters)?parameters:[];
+  for(const parameter of values.slice(0,256)){
+    const row=document.createElement('tr');
+    const pending=parameter.pending==null?'':` (pending ${parameter.pending})`;
+    for(const text of [`${parameter.name} · ${parameter.id}`,`${parameter.value} ${parameter.unit||''}${pending}`,`${parameter.min} – ${parameter.max}`]){
+      const cell=document.createElement('td');cell.textContent=text;row.appendChild(cell);
+    }
+    fragment.appendChild(row);
+  }
+  $('parameter-values').replaceChildren(fragment);
+  $('parameter-count').textContent=values.length>256?`Showing 256 of ${values.length} parameters`:values.length?`${values.length} live parameters`:'No parameter state available';
+}
+function echoEvents(batch){
+  if(!$('console-echo').checked)return;
+  const now=Date.now();
+  if(now-echoWindow>=1000){
+    if(echoSkipped)console.warn(`[RVST] ${echoSkipped} console events suppressed by the 50/second limit; use the inspector log view.`);
+    echoWindow=now;echoCount=0;echoSkipped=0;
+  }
+  for(const event of batch){
+    if(echoCount>=50){echoSkipped++;continue;}
+    const method=event.level==='error'?'error':event.level==='warn'?'warn':event.level==='info'?'info':'debug';
+    console[method](`[RVST ${event.target}] ${event.message}`,event.data);
+    echoCount++;
+  }
+}
+$('filter').oninput=render;$('level').onchange=render;
+$('clear').onclick=()=>{events=[];render();};
+$('pause').onclick=()=>{paused=!paused;$('pause').textContent=paused?'Resume view':'Pause view';render();};
+$('console-echo').onchange=()=>{echoWindow=Date.now();echoCount=0;echoSkipped=0;};
+async function poll(){
+  try{
+    if(!token)throw new Error('Missing session token — open using cargo rvst inspect');
+    const response=await fetch(`/api/events?after=${cursor}`,{headers:{'X-RVST-Token':token},cache:'no-store'});
+    if(!response.ok)throw new Error(`Connection rejected (${response.status})`);
+    const data=await response.json(), fresh=data.events.filter(event=>event.sequence>cursor);
+    cursor=Math.max(cursor,data.last_sequence);echoEvents(fresh);events.push(...fresh);events=events.slice(-1000);
+    $('subtitle').textContent=`${data.instance.plugin_name} · ${data.instance.plugin_id} · PID ${data.instance.pid} · ${data.instance.id}`;
+    $('status').textContent='● Connected';$('callbacks').textContent=data.metrics.callbacks.toLocaleString();
+    $('maximum').textContent=(data.metrics.max_callback_ns/1000000).toFixed(3)+' ms';
+    $('misses').textContent=data.metrics.deadline_misses;$('dropped').textContent=data.dropped_events;
+    $('timing').textContent=`Mean ${(data.metrics.mean_callback_ns/1000000).toFixed(3)} ms · P95 upper ${(data.metrics.p95_upper_ns/1000000).toFixed(3)} ms · P99 upper ${(data.metrics.p99_upper_ns/1000000).toFixed(3)} ms · UI frames ${data.metrics.ui_frames}`;
+    $('snapshot').textContent=JSON.stringify({state:data.snapshot,metrics:data.metrics},null,2);
+    if(!paused)renderParameters(data.snapshot.live?.parameters);
+    render();
+  }catch(error){$('status').textContent=error.message;}
+  finally{setTimeout(poll,300);}
+}
+poll();
+</script></html>

@@ -1,0 +1,14 @@
+[package]
+name = "rvst-devtools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Local browser inspector and bounded native-plugin log bridge"
+
+[dependencies]
+rvst-core = { path = "../rvst-core", version = "0.1.0" }
+rvst-runtime = { path = "../rvst-runtime", version = "0.1.0" }
+serde.workspace = true
+serde_json.workspace = true
+getrandom = "0.3"
