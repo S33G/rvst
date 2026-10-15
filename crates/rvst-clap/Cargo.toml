@@ -1,0 +1,21 @@
+[package]
+repository.workspace = true
+name = "rvst-clap"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+[dependencies]
+rvst-core = { version = "0.1.0", path = "../rvst-core" }
+rvst-adapter = { version = "0.1.0", path = "../rvst-adapter" }
+rvst-ui = { version = "0.1.0", path = "../rvst-ui" }
+rvst-platform = { version = "0.1.0", path = "../rvst-platform" }
+clap-sys = "0.5"
+
+[features]
+default = []
+devtools = ["rvst-adapter/devtools"]
+
+[dev-dependencies]
+rvst-test = { version = "0.1.0", path = "../rvst-test" }
+libloading = "0.8"
