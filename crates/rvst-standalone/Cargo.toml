@@ -1,0 +1,25 @@
+[package]
+repository.workspace = true
+name = "rvst-standalone"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+devtools = ["dep:rvst-devtools", "dep:rvst-runtime"]
+
+[dependencies]
+rvst-core = { path = "../rvst-core", version = "0.1.0" }
+rvst-ui = { path = "../rvst-ui", version = "0.1.0" }
+rvst-platform = { path = "../rvst-platform", version = "0.1.0" }
+rvst-adapter = { path = "../rvst-adapter", version = "0.1.0" }
+rvst-devtools = { path = "../rvst-devtools", version = "0.1.0", optional = true }
+serde_json.workspace = true
+cpal = "=0.18.2"
+hound = "3.5"
+rvst-runtime = { path = "../rvst-runtime", version = "0.1.0", optional = true }
+
+[dev-dependencies]
+rvst-test = { version = "0.1.0", path = "../rvst-test" }
