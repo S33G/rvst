@@ -1,0 +1,252 @@
+use rvst_core::*;
+use rvst_runtime::LinearSmoother;
+const PARAMETERS: &[ParameterSpec] = &[
+    ParameterSpec {
+        id: 1,
+        name: "Gain",
+        unit: "",
+        min: 0.,
+        max: 2.,
+        default: 0.5,
+        step: None,
+        bypass: false,
+    },
+    ParameterSpec {
+        id: 2,
+        name: "Bypass",
+        unit: "",
+        min: 0.,
+        max: 1.,
+        default: 0.,
+        step: Some(1.),
+        bypass: true,
+    },
+    ParameterSpec {
+        id: 3,
+        name: "Smoothing",
+        unit: "ms",
+        min: 0.,
+        max: 100.,
+        default: 5.,
+        step: Some(1.),
+        bypass: false,
+    },
+];
+const STEREO: &[AudioBus] = &[AudioBus {
+    name: "Main",
+    channels: 2,
+    auxiliary: false,
+}];
+static DESCRIPTOR: PluginDescriptor = PluginDescriptor {
+    id: {{ plugin_id_rust }},
+    name: {{ plugin_name_rust }},
+    vendor: {{ vendor_rust }},
+    version: "0.1.0",
+    url: {{ url_rust }},
+    email: {{ email_rust }},
+    vst3_id: [{{ vst3_id }}],
+    kind: PluginKind::Effect,
+    parameters: PARAMETERS,
+    inputs: STEREO,
+    outputs: STEREO,
+    midi_input: false,
+    midi_output: false,
+    supports_f64: true,
+};
+/// Minimal effect: stable parameters, click-free gain, bypass and versioned state.
+pub struct DemoPlugin {
+    values: [f64; 3],
+    gain: LinearSmoother,
+    sample_rate: f64,
+}
+trait Sample: Copy {
+    fn read(self) -> f64;
+    fn write(v: f64) -> Self;
+}
+impl Sample for f32 {
+    fn read(self) -> f64 {
+        self as f64
+    }
+    fn write(v: f64) -> Self {
+        v as f32
+    }
+}
+impl Sample for f64 {
+    fn read(self) -> f64 {
+        self
+    }
+    fn write(v: f64) -> Self {
+        v
+    }
+}
+impl DemoPlugin {
+    fn render<T: Sample>(&mut self, b: &mut AudioBlock<'_, T>, events: &[Event]) -> ProcessStatus {
+        for frame in 0..b.frames {
+            for event in events.iter().filter(|event| event.frame as usize == frame) {
+                if let EventKind::Parameter { id, value } = event.kind
+                    && (1..=3).contains(&id)
+                    && value.is_finite()
+                {
+                    let _ = self.set_parameter(id, value);
+                }
+            }
+            let gain = self.gain.next_sample();
+            for channel in 0..b.output_channels {
+                let input = if channel < b.input_channels {
+                    b.inputs[channel * b.frames + frame].read()
+                } else {
+                    0.
+                };
+                b.outputs[channel * b.frames + frame] = T::write(if self.values[1] >= 0.5 {
+                    input
+                } else {
+                    input * gain
+                });
+            }
+        }
+        ProcessStatus::Continue
+    }
+}
+impl Plugin for DemoPlugin {
+    fn descriptor() -> &'static PluginDescriptor {
+        &DESCRIPTOR
+    }
+    fn new() -> Self {
+        Self {
+            values: [0.5, 0., 5.],
+            gain: LinearSmoother::new(0.5),
+            sample_rate: 48000.,
+        }
+    }
+    fn prepare(&mut self, c: ProcessConfig) -> Result<(), Error> {
+        c.validate()?;
+        self.sample_rate = c.sample_rate;
+        self.reset();
+        Ok(())
+    }
+    fn process(
+        &mut self,
+        b: &mut AudioBlock<'_, f32>,
+        e: &[Event],
+        _: &Transport,
+        _: &mut dyn EventSink,
+    ) -> ProcessStatus {
+        self.render(b, e)
+    }
+    fn process_f64(
+        &mut self,
+        b: &mut AudioBlock<'_, f64>,
+        e: &[Event],
+        _: &Transport,
+        _: &mut dyn EventSink,
+    ) -> ProcessStatus {
+        self.render(b, e)
+    }
+    fn reset(&mut self) {
+        self.gain = LinearSmoother::new(self.values[0]);
+    }
+    fn parameter(&self, id: u32) -> Option<f64> {
+        id.checked_sub(1)
+            .and_then(|i| self.values.get(i as usize).copied())
+    }
+    fn set_parameter(&mut self, id: u32, value: f64) -> Result<(), Error> {
+        let p = DESCRIPTOR
+            .parameter(id)
+            .ok_or_else(|| Error("Unknown parameter".into()))?;
+        if !value.is_finite() {
+            return Err("Nonfinite parameter".into());
+        }
+        self.values[(id - 1) as usize] = p.clamp(value);
+        if id == 1 {
+            self.gain.set_target(
+                self.values[0],
+                (self.values[2] * self.sample_rate / 1000.).round() as u32,
+            );
+        }
+        Ok(())
+    }
+    fn save_state(&self) -> Result<Vec<u8>, Error> {
+        let mut bytes = b"RVSTGAIN1".to_vec();
+        for value in self.values {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        Ok(bytes)
+    }
+    fn load_state(&mut self, bytes: &[u8]) -> Result<(), Error> {
+        if bytes.len() != 33 || &bytes[..9] != b"RVSTGAIN1" {
+            return Err("Unknown or truncated gain state".into());
+        }
+        let mut values = [0.; 3];
+        for (i, value) in values.iter_mut().enumerate() {
+            *value = f64::from_le_bytes(bytes[9 + i * 8..17 + i * 8].try_into().unwrap());
+            if !value.is_finite() || PARAMETERS[i].clamp(*value) != *value {
+                return Err("Invalid gain state".into());
+            }
+        }
+        self.values = values;
+        self.reset();
+        Ok(())
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn smoothing_bypass_and_sample_offsets() {
+        let mut p = DemoPlugin::new();
+        p.prepare(ProcessConfig {
+            sample_rate: 1000.,
+            max_frames: 8,
+            input_channels: 2,
+            output_channels: 2,
+        })
+        .unwrap();
+        p.set_parameter(3, 4.).unwrap();
+        p.set_parameter(1, 1.).unwrap();
+        let input = [1f32; 8];
+        let mut output = [0.; 8];
+        p.process(
+            &mut AudioBlock::new(&input, &mut output, 4, 2, 2).unwrap(),
+            &[],
+            &Transport::default(),
+            &mut NullEventSink,
+        );
+        assert_eq!(output, [0.625, 0.75, 0.875, 1., 0.625, 0.75, 0.875, 1.]);
+        p.set_parameter(3, 0.).unwrap();
+        let events = [
+            Event {
+                frame: 1,
+                kind: EventKind::Parameter { id: 1, value: 0. },
+            },
+            Event {
+                frame: 3,
+                kind: EventKind::Parameter { id: 2, value: 1. },
+            },
+        ];
+        p.process(
+            &mut AudioBlock::new(&input, &mut output, 4, 2, 2).unwrap(),
+            &events,
+            &Transport::default(),
+            &mut NullEventSink,
+        );
+        assert_eq!(output, [1., 0., 0., 1., 1., 0., 0., 1.]);
+    }
+    #[test]
+    fn invalid_state_is_atomic_and_f64_matches() {
+        let mut p = DemoPlugin::new();
+        let before = p.save_state().unwrap();
+        let mut bad = before.clone();
+        bad[9..17].copy_from_slice(&f64::NAN.to_le_bytes());
+        assert!(p.load_state(&bad).is_err());
+        assert_eq!(p.save_state().unwrap(), before);
+        let input = [1.; 4];
+        let mut output = [0.; 4];
+        p.process_f64(
+            &mut AudioBlock::new(&input, &mut output, 2, 2, 2).unwrap(),
+            &[],
+            &Transport::default(),
+            &mut NullEventSink,
+        );
+        assert_eq!(output, [0.5; 4]);
+    }
+}

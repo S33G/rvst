@@ -1,0 +1,36 @@
+schema_version = 1
+version = "0.1.0"
+sdk_version = "^0.1"
+id = "debug"
+name = "RVST Debug"
+description = "Interactive RVST audio, parameter, theme, and diagnostics feature tour."
+
+[inputs.crate_name]
+type = "identifier"
+description = "Rust project directory/package identifier"
+required = true
+[inputs.plugin_name]
+type = "string"
+description = "Display name shown to hosts"
+default = "RVST Debug"
+[inputs.vendor]
+type = "string"
+description = "Plugin vendor"
+default = "RVST"
+[inputs.url]
+type = "string"
+description = "Vendor website"
+default = "https://example.com"
+[inputs.email]
+type = "string"
+description = "Support email"
+default = "support@example.com"
+[inputs.kind]
+type = "choice"
+description = "Plugin processor family"
+default = "gain"
+choices = ["gain"]
+
+[inputs.plugin_id]
+type = "string"
+description = "Stable reverse-domain plugin identifier (default org.rvst.project-name)"

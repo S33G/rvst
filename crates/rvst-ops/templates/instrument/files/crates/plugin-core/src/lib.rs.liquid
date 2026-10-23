@@ -1,0 +1,234 @@
+use rvst_core::*;
+const PARAMETERS: &[ParameterSpec] = &[ParameterSpec {
+    id: 1,
+    name: "Gain",
+    unit: "",
+    min: 0.0,
+    max: 2.0,
+    default: 0.5,
+    step: None,
+    bypass: false,
+}];
+const STEREO: &[AudioBus] = &[AudioBus {
+    name: "Main",
+    channels: 2,
+    auxiliary: false,
+}];
+static DESCRIPTOR: PluginDescriptor = PluginDescriptor {
+    id: {{ plugin_id_rust }},
+    name: {{ plugin_name_rust }},
+    vendor: {{ vendor_rust }},
+    version: "0.1.0",
+    url: {{ url_rust }},
+    email: {{ email_rust }},
+    vst3_id: [{{ vst3_id }}],
+    kind: PluginKind::Instrument,
+    parameters: PARAMETERS,
+    inputs: &[],
+    outputs: STEREO,
+    midi_input: true,
+    midi_output: false,
+    supports_f64: false,
+};
+/// Replace this small reference DSP with your own allocation-free processor.
+pub struct DemoPlugin {
+    value: f64,
+    sample_rate: f64,
+    phase: [f64; 128],
+    velocity: [f64; 128],
+    channels: [u8; 128],
+    note_ids: [i32; 128],
+}
+impl Plugin for DemoPlugin {
+    fn descriptor() -> &'static PluginDescriptor {
+        &DESCRIPTOR
+    }
+    fn new() -> Self {
+        Self {
+            value: PARAMETERS[0].default,
+            sample_rate: 48000.0,
+            phase: [0.0; 128],
+            velocity: [0.0; 128],
+            channels: [0; 128],
+            note_ids: [-1; 128],
+        }
+    }
+    fn prepare(&mut self, config: ProcessConfig) -> Result<(), Error> {
+        if !config.sample_rate.is_finite() || config.sample_rate <= 0.0 {
+            return Err("Invalid sample rate".into());
+        }
+        self.sample_rate = config.sample_rate;
+        Ok(())
+    }
+    fn process(
+        &mut self,
+        block: &mut AudioBlock<'_, f32>,
+        events: &[Event],
+        _transport: &Transport,
+        output: &mut dyn EventSink,
+    ) -> ProcessStatus {
+        for frame in 0..block.frames {
+            for event in events.iter().filter(|event| event.frame as usize == frame) {
+                match event.kind {
+                    EventKind::Parameter { id: 1, value } => {
+                        let _ = self.set_parameter(1, value);
+                    }
+                    EventKind::NoteOn {
+                        channel,
+                        key,
+                        velocity,
+                        note_id,
+                    } if channel < 16 && key < 128 => {
+                        self.velocity[key as usize] = velocity.clamp(0.0, 1.0);
+                        self.channels[key as usize] = channel;
+                        self.note_ids[key as usize] = note_id;
+                    }
+                    EventKind::NoteOff {
+                        channel,
+                        key,
+                        note_id,
+                        ..
+                    } if key < 128 => {
+                        let k = key as usize;
+                        if self.channels[k] == channel
+                            && (note_id < 0 || self.note_ids[k] == note_id)
+                        {
+                            self.velocity[k] = 0.0;
+                        }
+                    }
+                    EventKind::NoteRelease {
+                        channel,
+                        key,
+                        note_id,
+                        ..
+                    } => {
+                        for k in 0..128 {
+                            if channel.is_none_or(|v| v == self.channels[k])
+                                && key.is_none_or(|v| v as usize == k)
+                                && note_id.is_none_or(|v| v == self.note_ids[k])
+                            {
+                                self.velocity[k] = 0.0;
+                            }
+                        }
+                    }
+                    EventKind::AllNotesOff => self.velocity.fill(0.0),
+                    _ => {}
+                }
+            }
+            let mut sample = 0.0;
+            for key in 0..128 {
+                if self.velocity[key] > 0.0 {
+                    sample += self.phase[key].sin() * self.velocity[key] * 0.1;
+                    self.phase[key] = (self.phase[key]
+                        + std::f64::consts::TAU * 440.0 * 2.0f64.powf((key as f64 - 69.0) / 12.0)
+                            / self.sample_rate)
+                        % std::f64::consts::TAU;
+                }
+            }
+            for channel in 0..block.output_channels {
+                block.outputs[channel * block.frames + frame] = (sample * self.value) as f32;
+            }
+        }
+        let _ = output;
+
+        ProcessStatus::Continue
+    }
+    fn reset(&mut self) {
+        self.phase.fill(0.0);
+        self.velocity.fill(0.0);
+    }
+    fn parameter(&self, id: u32) -> Option<f64> {
+        (id == 1).then_some(self.value)
+    }
+    fn set_parameter(&mut self, id: u32, value: f64) -> Result<(), Error> {
+        if id != 1 || !value.is_finite() {
+            return Err("Invalid parameter".into());
+        }
+        self.value = PARAMETERS[0].clamp(value);
+        Ok(())
+    }
+    fn save_state(&self) -> Result<Vec<u8>, Error> {
+        Ok(self.value.to_le_bytes().to_vec())
+    }
+    fn load_state(&mut self, data: &[u8]) -> Result<(), Error> {
+        let bytes: [u8; 8] = data
+            .try_into()
+            .map_err(|_| Error::from("Invalid state length"))?;
+        self.set_parameter(1, f64::from_le_bytes(bytes))
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn state_round_trip_and_invalid_state() {
+        let mut plugin = DemoPlugin::new();
+        plugin.set_parameter(1, 1.0).unwrap();
+        let state = plugin.save_state().unwrap();
+        let mut restored = DemoPlugin::new();
+        restored.load_state(&state).unwrap();
+        assert_eq!(restored.parameter(1), Some(1.0));
+        assert!(restored.load_state(&[0]).is_err());
+        assert!(restored.set_parameter(1, f64::NAN).is_err());
+    }
+    #[test]
+    fn processor_handles_empty_block() {
+        let mut p = DemoPlugin::new();
+        let mut samples = [];
+        let mut block = AudioBlock::new(&[], &mut samples, 0, 0, 0).unwrap();
+        assert_eq!(
+            p.process(&mut block, &[], &Transport::default(), &mut NullEventSink),
+            ProcessStatus::Continue
+        );
+    }
+
+    #[test]
+    fn scoped_note_release_leaves_other_voice_playing() {
+        let mut p = DemoPlugin::new();
+        let mut samples = [0f32; 2];
+        let notes = [
+            Event {
+                frame: 0,
+                kind: EventKind::NoteOn {
+                    channel: 0,
+                    key: 60,
+                    velocity: 1.0,
+                    note_id: 10,
+                },
+            },
+            Event {
+                frame: 0,
+                kind: EventKind::NoteOn {
+                    channel: 1,
+                    key: 64,
+                    velocity: 1.0,
+                    note_id: 11,
+                },
+            },
+        ];
+        p.process(
+            &mut AudioBlock::new(&[], &mut samples, 1, 0, 2).unwrap(),
+            &notes,
+            &Transport::default(),
+            &mut NullEventSink,
+        );
+        let release = Event {
+            frame: 0,
+            kind: EventKind::NoteRelease {
+                channel: None,
+                key: None,
+                note_id: Some(10),
+                velocity: 0.0,
+                choke: true,
+            },
+        };
+        p.process(
+            &mut AudioBlock::new(&[], &mut samples, 1, 0, 2).unwrap(),
+            &[release],
+            &Transport::default(),
+            &mut NullEventSink,
+        );
+        assert_eq!(p.velocity[60], 0.0);
+        assert_eq!(p.velocity[64], 1.0);
+    }
+}

@@ -1,0 +1,14 @@
+[package]
+name = "plugin-standalone"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = ["devtools"]
+devtools = ["rvst-standalone/devtools"]
+
+[dependencies]
+plugin-core = { path = "../plugin-core" }
+plugin-ui = { path = "../plugin-ui" }
+rvst-standalone = {{ rvst_standalone }}

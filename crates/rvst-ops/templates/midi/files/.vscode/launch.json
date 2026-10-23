@@ -1,0 +1,30 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "RVST standalone",
+      "type": "lldb",
+      "request": "launch",
+      "cargo": {
+        "args": [
+          "build",
+          "--package",
+          "plugin-standalone",
+          "--features",
+          "devtools"
+        ],
+        "filter": {
+          "name": "plugin-standalone",
+          "kind": "bin"
+        }
+      },
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Attach RVST in DAW",
+      "type": "lldb",
+      "request": "attach",
+      "pid": "${command:pickProcess}"
+    }
+  ]
+}

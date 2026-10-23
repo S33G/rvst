@@ -1,0 +1,904 @@
+use rvst_core::*;
+use rvst_runtime::LinearSmoother;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicU32, Ordering},
+};
+/// Per-instance UI commands. Atomics only; no plugin pointer or audio-thread lock.
+#[derive(Default)]
+pub struct DebugControls {
+    notes: AtomicU32,
+    release: AtomicBool,
+}
+impl DebugControls {
+    pub fn play_note(&self, key: u8) {
+        if (60..72).contains(&key) {
+            self.notes.fetch_or(1 << (key - 60), Ordering::Release);
+        }
+    }
+    pub fn all_notes_off(&self) {
+        self.release.store(true, Ordering::Release);
+    }
+}
+const PARAMETERS: &[ParameterSpec] = &[
+    ParameterSpec {
+        id: 1,
+        name: "Gain",
+        unit: "",
+        min: 0.0,
+        max: 2.0,
+        default: 0.5,
+        step: None,
+        bypass: false,
+    },
+    ParameterSpec {
+        id: 2,
+        name: "Tone",
+        unit: "Hz",
+        min: 0.0,
+        max: 1000.0,
+        default: 0.0,
+        step: Some(1.0),
+        bypass: false,
+    },
+    ParameterSpec {
+        id: 3,
+        name: "Bypass",
+        unit: "",
+        min: 0.0,
+        max: 1.0,
+        default: 0.0,
+        step: Some(1.0),
+        bypass: true,
+    },
+    ParameterSpec {
+        id: 4,
+        name: "Waveform",
+        unit: "",
+        min: 0.0,
+        max: 2.0,
+        default: 0.0,
+        step: Some(1.0),
+        bypass: false,
+    },
+    ParameterSpec {
+        id: 5,
+        name: "Log marker",
+        unit: "",
+        min: 0.0,
+        max: 100.0,
+        default: 0.0,
+        step: Some(1.0),
+        bypass: false,
+    },
+    ParameterSpec {
+        id: 6,
+        name: "Sidechain duck",
+        unit: "",
+        min: 0.0,
+        max: 1.0,
+        default: 0.0,
+        step: None,
+        bypass: false,
+    },
+    ParameterSpec {
+        id: 7,
+        name: "Smoothing",
+        unit: "ms",
+        min: 0.0,
+        max: 100.0,
+        default: 20.0,
+        step: Some(1.0),
+        bypass: false,
+    },
+    ParameterSpec {
+        id: 8,
+        name: "Workload",
+        unit: "steps",
+        min: 0.0,
+        max: 64.0,
+        default: 0.0,
+        step: Some(1.0),
+        bypass: false,
+    },
+];
+const INPUTS: &[AudioBus] = &[
+    AudioBus {
+        name: "Main",
+        channels: 2,
+        auxiliary: false,
+    },
+    AudioBus {
+        name: "Sidechain",
+        channels: 2,
+        auxiliary: true,
+    },
+];
+const OUTPUTS: &[AudioBus] = &[AudioBus {
+    name: "Main",
+    channels: 2,
+    auxiliary: false,
+}];
+static DESCRIPTOR: PluginDescriptor = PluginDescriptor {
+    id: {{ plugin_id_rust }},
+    name: {{ plugin_name_rust }},
+    vendor: {{ vendor_rust }},
+    version: "0.1.0",
+    url: {{ url_rust }},
+    email: {{ email_rust }},
+    vst3_id: [{{ vst3_id }}],
+    kind: PluginKind::Effect,
+    parameters: PARAMETERS,
+    inputs: INPUTS,
+    outputs: OUTPUTS,
+    midi_input: true,
+    midi_output: true,
+    supports_f64: true,
+};
+#[derive(Clone, Copy)]
+struct Voice {
+    key: u8,
+    channel: u8,
+    note_id: i32,
+    phase: f64,
+    frequency: f64,
+    velocity: f64,
+    pressure: f64,
+    envelope: f64,
+    held: bool,
+}
+impl Default for Voice {
+    fn default() -> Self {
+        Self {
+            key: 0,
+            channel: 0,
+            note_id: -1,
+            phase: 0.0,
+            frequency: 0.0,
+            velocity: 0.0,
+            pressure: 1.0,
+            envelope: 0.0,
+            held: false,
+        }
+    }
+}
+trait AudioSample: Copy {
+    fn to_f64(self) -> f64;
+    fn from_f64(value: f64) -> Self;
+}
+impl AudioSample for f32 {
+    fn to_f64(self) -> f64 {
+        self as f64
+    }
+    fn from_f64(value: f64) -> Self {
+        value as f32
+    }
+}
+impl AudioSample for f64 {
+    fn to_f64(self) -> f64 {
+        self
+    }
+    fn from_f64(value: f64) -> Self {
+        value
+    }
+}
+
+/// Quiet-by-default feature laboratory. All render storage is fixed and prepared offaudio.
+pub struct DemoPlugin {
+    values: [f64; 8],
+    sample_rate: f64,
+    phase: f64,
+    sample_clock: u64,
+    playing: bool,
+    gain: LinearSmoother,
+    voices: [Voice; 16],
+    bend: [f64; 16],
+    pending_release: bool,
+    workload: f64,
+    controls: Arc<DebugControls>,
+    demo_note_deadlines: [u64; 12],
+    diagnostics: Option<Box<dyn DiagnosticSink>>,
+}
+impl DemoPlugin {
+    fn emit(&mut self, code: u32, value: f64) {
+        if let Some(sink) = &mut self.diagnostics {
+            let _ = sink.emit(code, self.sample_clock, value);
+        }
+    }
+    fn smoothing_samples(&self) -> u32 {
+        (self.sample_rate * self.values[6] / 1000.0).round() as u32
+    }
+    fn accept_event(&mut self, event: Event, output: &mut dyn EventSink) {
+        let musical = match event.kind {
+            EventKind::Parameter { id, value } => {
+                if (1..=PARAMETERS.len() as u32).contains(&id) && value.is_finite() {
+                    let _ = self.set_parameter(id, value);
+                }
+                false
+            }
+            EventKind::Modulation { id: 1, amount } => {
+                self.gain.set_target(
+                    PARAMETERS[0].clamp(self.values[0] + amount),
+                    self.smoothing_samples(),
+                );
+                false
+            }
+            EventKind::Modulation { .. } | EventKind::ParameterRamp(_) => false,
+            EventKind::NoteOn {
+                channel,
+                key,
+                velocity,
+                note_id,
+            } => {
+                if channel < 16 && key < 128 && velocity.is_finite() {
+                    let index = self
+                        .voices
+                        .iter()
+                        .position(|v| !v.held && v.envelope <= 0.0)
+                        .or_else(|| self.voices.iter().position(|v| !v.held))
+                        .unwrap_or(0);
+                    self.voices[index] = Voice {
+                        key,
+                        channel,
+                        note_id,
+                        phase: 0.0,
+                        frequency: 440.0 * 2.0_f64.powf((key as f64 - 69.0) / 12.0),
+                        velocity: velocity.clamp(0.0, 1.0),
+                        pressure: 1.0,
+                        envelope: 0.0,
+                        held: true,
+                    };
+                    self.emit(300 + u32::from(key), velocity);
+                }
+                true
+            }
+            EventKind::NoteOff {
+                channel,
+                key,
+                note_id,
+                ..
+            } => {
+                for v in &mut self.voices {
+                    if v.channel == channel && v.key == key && (note_id < 0 || v.note_id == note_id)
+                    {
+                        v.held = false;
+                    }
+                }
+                self.emit(500 + u32::from(key), 0.0);
+                true
+            }
+            EventKind::NoteRelease {
+                channel,
+                key,
+                note_id,
+                choke,
+                ..
+            } => {
+                for v in &mut self.voices {
+                    if channel.is_none_or(|c| v.channel == c)
+                        && key.is_none_or(|k| v.key == k)
+                        && note_id.is_none_or(|id| v.note_id == id)
+                    {
+                        v.held = false;
+                        if choke {
+                            v.envelope = 0.0;
+                        }
+                    }
+                }
+                true
+            }
+            EventKind::ChannelPressure { channel, pressure } => {
+                if pressure.is_finite() {
+                    for v in &mut self.voices {
+                        if v.channel == channel {
+                            v.pressure = pressure.clamp(0.0, 1.0);
+                        }
+                    }
+                }
+                true
+            }
+            EventKind::PolyPressure {
+                channel,
+                key,
+                pressure,
+                note_id,
+            } => {
+                if pressure.is_finite() {
+                    for v in &mut self.voices {
+                        if v.channel == channel
+                            && v.key == key
+                            && (note_id < 0 || v.note_id == note_id)
+                        {
+                            v.pressure = pressure.clamp(0.0, 1.0);
+                        }
+                    }
+                }
+                true
+            }
+            EventKind::PitchBend { channel, value } => {
+                if channel < 16 && value.is_finite() {
+                    self.bend[channel as usize] = value.clamp(-1.0, 1.0) * 2.0;
+                }
+                true
+            }
+            EventKind::ControlChange {
+                channel,
+                controller: 120 | 123,
+                ..
+            } => {
+                for v in &mut self.voices {
+                    if v.channel == channel {
+                        v.held = false;
+                    }
+                }
+                true
+            }
+            EventKind::AllNotesOff => {
+                for v in &mut self.voices {
+                    v.held = false;
+                }
+                true
+            }
+            EventKind::ControlChange { .. } => true,
+        };
+        if musical && !output.push(event) {
+            self.pending_release = true;
+            for voice in &mut self.voices {
+                voice.held = false;
+            }
+            self.emit(901, 1.0);
+        }
+    }
+    fn render<T: AudioSample>(
+        &mut self,
+        block: &mut AudioBlock<'_, T>,
+        events: &[Event],
+        transport: &Transport,
+        output: &mut dyn EventSink,
+    ) -> ProcessStatus {
+        if self.playing != transport.playing {
+            self.playing = transport.playing;
+            self.emit(600, if self.playing { 1.0 } else { 0.0 });
+        }
+        if self.pending_release
+            && output.push(Event {
+                frame: 0,
+                kind: EventKind::AllNotesOff,
+            })
+        {
+            self.pending_release = false;
+        }
+        if self.controls.release.swap(false, Ordering::AcqRel) {
+            self.accept_event(
+                Event {
+                    frame: 0,
+                    kind: EventKind::AllNotesOff,
+                },
+                output,
+            );
+            self.demo_note_deadlines.fill(0);
+        }
+        let notes = self.controls.notes.swap(0, Ordering::AcqRel);
+        for i in 0..12 {
+            if notes & (1 << i) != 0 {
+                self.accept_event(
+                    Event {
+                        frame: 0,
+                        kind: EventKind::NoteOn {
+                            channel: 0,
+                            key: 60 + i as u8,
+                            velocity: 0.75,
+                            note_id: -1,
+                        },
+                    },
+                    output,
+                );
+                self.demo_note_deadlines[i] = self.sample_clock + (self.sample_rate * 0.3) as u64;
+            }
+        }
+        let mut peak = 0.0_f64;
+        let mut ramps: [Option<ParameterRamp>; 8] = [None; 8];
+        let mut voice_increments = [0.0; 16];
+        for frame in 0..block.frames {
+            for i in 0..12 {
+                if self.demo_note_deadlines[i] > 0
+                    && self.sample_clock >= self.demo_note_deadlines[i]
+                {
+                    self.accept_event(
+                        Event {
+                            frame: frame as u32,
+                            kind: EventKind::NoteOff {
+                                channel: 0,
+                                key: 60 + i as u8,
+                                velocity: 0.0,
+                                note_id: -1,
+                            },
+                        },
+                        output,
+                    );
+                    self.demo_note_deadlines[i] = 0;
+                }
+            }
+            for event in events.iter().filter(|event| event.frame as usize == frame) {
+                if let EventKind::ParameterRamp(ramp) = event.kind {
+                    if let Some(index) = PARAMETERS.iter().position(|p| p.id == ramp.id) {
+                        ramps[index] = Some(ramp);
+                    }
+                } else {
+                    self.accept_event(*event, output);
+                    voice_increments.fill(0.0);
+                }
+            }
+            for (index, ramp) in ramps.iter().enumerate() {
+                if let Some(ramp) = ramp {
+                    let value = PARAMETERS[index].denormalize(ramp.normalized_at(frame as u32));
+                    self.values[index] = value;
+                    if index == 0 {
+                        self.gain.set_target(value, 0);
+                    }
+                }
+            }
+            let gain = self.gain.next_sample();
+            let tone_wave = wave(self.phase, self.values[3] as u32);
+            let mut oscillator = if self.values[1] > 0.0 {
+                tone_wave * 0.12
+            } else {
+                0.0
+            };
+            self.phase = (self.phase + std::f64::consts::TAU * self.values[1] / self.sample_rate)
+                % std::f64::consts::TAU;
+            for (index, voice) in self.voices.iter_mut().enumerate() {
+                if voice.held {
+                    voice.envelope = (voice.envelope + 1.0 / (self.sample_rate * 0.005)).min(1.0);
+                } else {
+                    voice.envelope = (voice.envelope - 1.0 / (self.sample_rate * 0.02)).max(0.0);
+                }
+                if voice.envelope > 0.0 {
+                    if frame == 0 || voice_increments[index] == 0.0 {
+                        voice_increments[index] = std::f64::consts::TAU
+                            * voice.frequency
+                            * 2.0_f64.powf(self.bend[voice.channel as usize] / 12.0)
+                            / self.sample_rate;
+                    }
+                    oscillator += wave(voice.phase, self.values[3] as u32)
+                        * voice.velocity
+                        * voice.pressure
+                        * voice.envelope
+                        * 0.08;
+                    voice.phase = (voice.phase + voice_increments[index]) % std::f64::consts::TAU;
+                }
+            }
+            // Auxiliary stereo input remains optional: absent channels read as silence.
+            let sidechain = (2..block.input_channels.min(4))
+                .map(|c| block.inputs[c * block.frames + frame].to_f64().abs())
+                .fold(0.0, f64::max);
+            let duck = 1.0 / (1.0 + sidechain * self.values[5] * 12.0);
+            for channel in 0..block.output_channels {
+                let input = if channel < block.input_channels.min(2) {
+                    block.inputs[channel * block.frames + frame].to_f64()
+                } else {
+                    0.0
+                };
+                let value = if self.values[2] >= 0.5 {
+                    input
+                } else {
+                    (input + oscillator) * gain * duck
+                };
+                let value = if value.is_finite() { value } else { 0.0 };
+                peak = peak.max(value.abs());
+                block.outputs[channel * block.frames + frame] = T::from_f64(value);
+            }
+            for _ in 0..self.values[7] as u32 {
+                self.workload = (self.workload.mul_add(1.000001, 0.000001)).sin();
+            }
+            std::hint::black_box(self.workload);
+            self.sample_clock = self.sample_clock.saturating_add(1);
+        }
+        // At most ten meter events per second, independent of host block length.
+        if block.frames > 0
+            && self.sample_clock % (self.sample_rate as u64 / 10).max(1) < block.frames as u64
+        {
+            self.emit(700, peak);
+        }
+        if self.voices.iter().any(|v| !v.held && v.envelope > 0.0) {
+            ProcessStatus::Tail
+        } else {
+            ProcessStatus::Continue
+        }
+    }
+}
+fn wave(phase: f64, kind: u32) -> f64 {
+    match kind {
+        1 => 2.0 * phase / std::f64::consts::TAU - 1.0,
+        2 => {
+            if phase < std::f64::consts::PI {
+                1.0
+            } else {
+                -1.0
+            }
+        }
+        _ => phase.sin(),
+    }
+}
+impl Plugin for DemoPlugin {
+    fn diagnostic_events() -> &'static [(u32, &'static str)] {
+        &[(100,"Plugin diagnostics connected"),(101,"Processor prepared"),(102,"Processor reset"),
+          (201,"Gain changed"),(202,"Tone changed"),(203,"Bypass changed"),(204,"Waveform changed"),
+          (205,"Log marker changed"),(206,"Sidechain duck changed"),(207,"Smoothing changed"),(208,"Workload changed"),
+          (400,"State restored"),(600,"Transport changed"),(700,"Output peak"),(901,"Musical output overflow")]
+    }
+
+    fn descriptor() -> &'static PluginDescriptor {
+        &DESCRIPTOR
+    }
+    fn new() -> Self {
+        Self {
+            values: [0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 20.0, 0.0],
+            sample_rate: 48000.0,
+            phase: 0.0,
+            sample_clock: 0,
+            playing: false,
+            gain: LinearSmoother::new(0.5),
+            voices: [Voice::default(); 16],
+            bend: [0.0; 16],
+            pending_release: false,
+            workload: 0.0,
+            controls: Arc::new(DebugControls::default()),
+            demo_note_deadlines: [0; 12],
+            diagnostics: None,
+        }
+    }
+    fn editor_context(&self) -> Option<EditorContext> {
+        Some(self.controls.clone())
+    }
+    fn connect_diagnostics(&mut self, sink: Box<dyn DiagnosticSink>) {
+        self.diagnostics = Some(sink);
+        self.emit(100, 1.0);
+    }
+    fn prepare(&mut self, config: ProcessConfig) -> Result<(), Error> {
+        config.validate()?;
+        self.sample_rate = config.sample_rate;
+        self.gain = LinearSmoother::new(self.values[0]);
+        self.emit(101, config.sample_rate);
+        Ok(())
+    }
+    fn process(
+        &mut self,
+        block: &mut AudioBlock<'_, f32>,
+        events: &[Event],
+        transport: &Transport,
+        output: &mut dyn EventSink,
+    ) -> ProcessStatus {
+        self.render(block, events, transport, output)
+    }
+    fn process_f64(
+        &mut self,
+        block: &mut AudioBlock<'_, f64>,
+        events: &[Event],
+        transport: &Transport,
+        output: &mut dyn EventSink,
+    ) -> ProcessStatus {
+        self.render(block, events, transport, output)
+    }
+    fn reset(&mut self) {
+        self.phase = 0.0;
+        self.voices.fill(Voice::default());
+        self.bend.fill(0.0);
+        self.pending_release = true;
+        self.demo_note_deadlines.fill(0);
+        self.controls.notes.store(0, Ordering::Release);
+        self.gain = LinearSmoother::new(self.values[0]);
+        self.emit(102, 0.0);
+    }
+    fn parameter(&self, id: u32) -> Option<f64> {
+        id.checked_sub(1)
+            .and_then(|i| self.values.get(i as usize).copied())
+    }
+    fn set_parameter(&mut self, id: u32, value: f64) -> Result<(), Error> {
+        let Some(spec) = PARAMETERS.iter().find(|spec| spec.id == id) else {
+            return Err("Unknown parameter".into());
+        };
+        if !value.is_finite() {
+            return Err("Invalid parameter value".into());
+        }
+        let value = spec.clamp(value);
+        self.values[(id - 1) as usize] = value;
+        if id == 1 {
+            self.gain.set_target(value, self.smoothing_samples());
+        }
+        self.emit(200 + id, value);
+        Ok(())
+    }
+    fn save_state(&self) -> Result<Vec<u8>, Error> {
+        let mut state = b"RVSTDBG1".to_vec();
+        state.extend(self.values.iter().flat_map(|value| value.to_le_bytes()));
+        Ok(state)
+    }
+    fn load_state(&mut self, data: &[u8]) -> Result<(), Error> {
+        if data.len() != 72 || &data[..8] != b"RVSTDBG1" {
+            return Err("Invalid debug state version or length".into());
+        }
+        let mut values = [0.0; 8];
+        for (i, bytes) in data[8..].as_chunks::<8>().0.iter().enumerate() {
+            values[i] = f64::from_le_bytes(*bytes);
+            if !values[i].is_finite() {
+                return Err("Invalid state value".into());
+            }
+            values[i] = PARAMETERS[i].clamp(values[i]);
+        }
+        self.values = values;
+        self.gain.set_target(values[0], self.smoothing_samples());
+        self.emit(400, 72.0);
+        Ok(())
+    }
+    fn latency(&self) -> u32 {
+        0
+    }
+    fn tail(&self) -> Tail {
+        Tail::Samples((self.sample_rate * 0.02).ceil() as u64)
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[derive(Default)]
+    struct Sink(Vec<Event>);
+    impl EventSink for Sink {
+        fn push(&mut self, event: Event) -> bool {
+            self.0.push(event);
+            true
+        }
+    }
+    fn configured() -> DemoPlugin {
+        let mut p = DemoPlugin::new();
+        p.set_parameter(7, 0.0).unwrap();
+        p.set_parameter(1, 1.0).unwrap();
+        p.prepare(ProcessConfig {
+            sample_rate: 48000.0,
+            max_frames: 2048,
+            input_channels: 4,
+            output_channels: 2,
+        })
+        .unwrap();
+        p
+    }
+    #[test]
+    fn silent_default_and_atomic_state_restore() {
+        let mut p = DemoPlugin::new();
+        let inputs = [0.0; 256];
+        let mut out = [1.0; 128];
+        p.process(
+            &mut AudioBlock::new(&inputs, &mut out, 64, 4, 2).unwrap(),
+            &[],
+            &Transport::default(),
+            &mut Sink::default(),
+        );
+        assert!(out.iter().all(|v| *v == 0.0));
+        let before = p.save_state().unwrap();
+        let mut bad = before.clone();
+        bad[8..16].copy_from_slice(&f64::NAN.to_le_bytes());
+        assert!(p.load_state(&bad).is_err());
+        assert_eq!(p.save_state().unwrap(), before);
+        p.set_parameter(2, 440.0).unwrap();
+        let state = p.save_state().unwrap();
+        p.load_state(&before).unwrap();
+        assert_eq!(p.parameter(2), Some(0.0));
+        p.load_state(&state).unwrap();
+        assert_eq!(p.parameter(2), Some(440.0));
+    }
+    #[test]
+    fn sidechain_and_bypass() {
+        let mut p = configured();
+        p.set_parameter(6, 1.0).unwrap();
+        let inputs = [1.0; 256];
+        let mut out = [0.0; 128];
+        p.process(
+            &mut AudioBlock::new(&inputs, &mut out, 64, 4, 2).unwrap(),
+            &[],
+            &Transport::default(),
+            &mut Sink::default(),
+        );
+        assert!((out[0] - 1.0 / 13.0).abs() < 1e-6);
+        p.set_parameter(3, 1.0).unwrap();
+        p.process(
+            &mut AudioBlock::new(&inputs, &mut out, 64, 4, 2).unwrap(),
+            &[],
+            &Transport::default(),
+            &mut Sink::default(),
+        );
+        assert!(out.iter().all(|v| *v == 1.0));
+    }
+    #[test]
+    fn f32_f64_paths_match() {
+        let mut a = configured();
+        let mut b = configured();
+        a.set_parameter(2, 440.0).unwrap();
+        b.set_parameter(2, 440.0).unwrap();
+        let input32 = [0.2f32; 512];
+        let input64 = [0.2f64; 512];
+        let mut out32 = [0.0; 256];
+        let mut out64 = [0.0; 256];
+        a.process(
+            &mut AudioBlock::new(&input32, &mut out32, 128, 4, 2).unwrap(),
+            &[],
+            &Transport::default(),
+            &mut Sink::default(),
+        );
+        b.process_f64(
+            &mut AudioBlock::new(&input64, &mut out64, 128, 4, 2).unwrap(),
+            &[],
+            &Transport::default(),
+            &mut Sink::default(),
+        );
+        for (a, b) in out32.iter().zip(out64) {
+            assert!((*a as f64 - b).abs() < 1e-7);
+        }
+    }
+    #[test]
+    fn midi_voice_event_offsets_and_recovery() {
+        let mut p = configured();
+        let event = Event {
+            frame: 8,
+            kind: EventKind::NoteOn {
+                channel: 0,
+                key: 69,
+                velocity: 1.0,
+                note_id: 1,
+            },
+        };
+        let inputs = [0.0; 512];
+        let mut out = [0.0; 256];
+        let mut sink = Sink::default();
+        p.process(
+            &mut AudioBlock::new(&inputs, &mut out, 128, 4, 2).unwrap(),
+            &[event],
+            &Transport::default(),
+            &mut sink,
+        );
+        assert!(out[..8].iter().all(|v| *v == 0.0));
+        assert!(out[9..128].iter().any(|v| v.abs() > 0.001));
+        assert_eq!(sink.0, [event]);
+        p.process(
+            &mut AudioBlock::new(&inputs, &mut out, 128, 4, 2).unwrap(),
+            &[Event {
+                frame: 0,
+                kind: EventKind::AllNotesOff,
+            }],
+            &Transport::default(),
+            &mut NullEventSink,
+        );
+        assert!(p.pending_release);
+        let mut recovery = Sink::default();
+        p.process(
+            &mut AudioBlock::new(&inputs, &mut out, 128, 4, 2).unwrap(),
+            &[],
+            &Transport::default(),
+            &mut recovery,
+        );
+        assert!(recovery.0.iter().any(|e| e.kind == EventKind::AllNotesOff));
+    }
+    #[test]
+    fn gain_smoothing_and_normalized_ramp() {
+        let mut p = DemoPlugin::new();
+        p.set_parameter(1, 1.0).unwrap();
+        assert_eq!(p.gain.current(), 0.5);
+        let inputs = [1.0; 256];
+        let mut out = [0.0; 128];
+        let ramp = Event {
+            frame: 0,
+            kind: EventKind::ParameterRamp(ParameterRamp {
+                id: 1,
+                start_frame: 0,
+                end_frame: 63,
+                start_normalized: 0.0,
+                end_normalized: 0.5,
+            }),
+        };
+        p.process(
+            &mut AudioBlock::new(&inputs, &mut out, 64, 4, 2).unwrap(),
+            &[ramp],
+            &Transport::default(),
+            &mut Sink::default(),
+        );
+        assert_eq!(out[0], 0.0);
+        assert!((out[63] - 1.0).abs() < 1e-6);
+    }
+    #[test]
+    fn per_instance_keyboard_emits_automatic_note_off() {
+        let mut a = configured();
+        a.prepare(ProcessConfig {
+            sample_rate: 1000.0,
+            max_frames: 400,
+            input_channels: 4,
+            output_channels: 2,
+        })
+        .unwrap();
+        let mut b = configured();
+        b.prepare(ProcessConfig {
+            sample_rate: 1000.0,
+            max_frames: 400,
+            input_channels: 4,
+            output_channels: 2,
+        })
+        .unwrap();
+        a.controls.play_note(60);
+        let inputs = [0.0; 1600];
+        let mut played = [0.0; 800];
+        let mut quiet = [0.0; 800];
+        let mut sink = Sink::default();
+        a.process(
+            &mut AudioBlock::new(&inputs, &mut played, 400, 4, 2).unwrap(),
+            &[],
+            &Transport::default(),
+            &mut sink,
+        );
+        b.process(
+            &mut AudioBlock::new(&inputs, &mut quiet, 400, 4, 2).unwrap(),
+            &[],
+            &Transport::default(),
+            &mut Sink::default(),
+        );
+        assert!(played.iter().any(|v| v.abs() > 0.001));
+        assert!(quiet.iter().all(|v| *v == 0.0));
+        assert!(sink.0.iter().any(|event| matches!(
+            event.kind,
+            EventKind::NoteOff { key: 60, .. }
+        ) && event.frame == 300));
+        assert_eq!(a.latency(), 0);
+        assert_eq!(a.tail(), Tail::Samples(20));
+    }
+
+    #[test]
+    fn scoped_wildcard_release_and_choke_preserve_other_voices() {
+        let mut p = configured();
+        let mut sink = Sink::default();
+        for (channel, key, note_id) in [(0, 60, 10), (1, 64, 11)] {
+            p.accept_event(
+                Event {
+                    frame: 0,
+                    kind: EventKind::NoteOn {
+                        channel,
+                        key,
+                        velocity: 1.0,
+                        note_id,
+                    },
+                },
+                &mut sink,
+            );
+        }
+        p.voices[0].envelope = 1.0;
+        p.voices[1].envelope = 1.0;
+        p.accept_event(
+            Event {
+                frame: 0,
+                kind: EventKind::NoteRelease {
+                    channel: None,
+                    key: None,
+                    note_id: Some(10),
+                    velocity: 0.0,
+                    choke: true,
+                },
+            },
+            &mut sink,
+        );
+        assert!(!p.voices[0].held);
+        assert_eq!(p.voices[0].envelope, 0.0);
+        assert!(p.voices[1].held);
+        assert_eq!(p.voices[1].envelope, 1.0);
+        p.accept_event(
+            Event {
+                frame: 0,
+                kind: EventKind::NoteRelease {
+                    channel: Some(1),
+                    key: None,
+                    note_id: None,
+                    velocity: 0.0,
+                    choke: false,
+                },
+            },
+            &mut sink,
+        );
+        assert!(!p.voices[1].held);
+        assert_eq!(p.voices[1].envelope, 1.0);
+    }
+}

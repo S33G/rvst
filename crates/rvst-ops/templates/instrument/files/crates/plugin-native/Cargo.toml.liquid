@@ -1,0 +1,18 @@
+[package]
+name = "plugin-native"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[features]
+default = []
+devtools = ["rvst-vst3/devtools", "rvst-clap/devtools"]
+
+[dependencies]
+plugin-core = { path = "../plugin-core" }
+plugin-ui = { path = "../plugin-ui" }
+rvst-vst3 = {{ rvst_vst3 }}
+rvst-clap = {{ rvst_clap }}

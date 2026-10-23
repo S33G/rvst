@@ -1,0 +1,307 @@
+use rvst_core::*;
+const PARAMETERS: &[ParameterSpec] = &[ParameterSpec {
+    id: 1,
+    name: "Transpose",
+    unit: "st",
+    min: -24.0,
+    max: 24.0,
+    default: 0.0,
+    step: Some(1.0),
+    bypass: false,
+}];
+const AUDIO_PASSTHROUGH: bool = {% if audio_mode == 'pass-through' %}true{% else %}false{% endif %};
+const STEREO: &[AudioBus] = &[AudioBus {
+    name: "Main",
+    channels: 2,
+    auxiliary: false,
+}];
+static DESCRIPTOR: PluginDescriptor = PluginDescriptor {
+    id: {{ plugin_id_rust }},
+    name: {{ plugin_name_rust }},
+    vendor: {{ vendor_rust }},
+    version: "0.1.0",
+    url: {{ url_rust }},
+    email: {{ email_rust }},
+    vst3_id: [{{ vst3_id }}],
+    kind: PluginKind::Midi,
+    parameters: PARAMETERS,
+    inputs: if AUDIO_PASSTHROUGH { STEREO } else { &[] },
+    outputs: if AUDIO_PASSTHROUGH { STEREO } else { &[] },
+    midi_input: true,
+    midi_output: true,
+    supports_f64: false,
+};
+/// Replace this small reference DSP with your own allocation-free processor.
+pub struct DemoPlugin {
+    value: f64,
+
+    notes: [[u8; 128]; 16],
+    active: [[bool; 128]; 16],
+    note_ids: [[i32; 128]; 16],
+}
+impl Plugin for DemoPlugin {
+    fn descriptor() -> &'static PluginDescriptor {
+        &DESCRIPTOR
+    }
+    fn new() -> Self {
+        Self {
+            value: PARAMETERS[0].default,
+
+            notes: [[0; 128]; 16],
+            active: [[false; 128]; 16],
+            note_ids: [[-1; 128]; 16],
+        }
+    }
+    fn prepare(&mut self, config: ProcessConfig) -> Result<(), Error> {
+        if !config.sample_rate.is_finite() || config.sample_rate <= 0.0 {
+            return Err("Invalid sample rate".into());
+        }
+        Ok(())
+    }
+    fn process(
+        &mut self,
+        block: &mut AudioBlock<'_, f32>,
+        events: &[Event],
+        _transport: &Transport,
+        output: &mut dyn EventSink,
+    ) -> ProcessStatus {
+        for event in events {
+            let mut event = *event;
+            match &mut event.kind {
+                EventKind::Parameter { id: 1, value } => {
+                    let _ = self.set_parameter(1, *value);
+                    continue;
+                }
+                EventKind::NoteOn {
+                    channel,
+                    key,
+                    velocity,
+                    note_id,
+                } if *channel < 16 && *key < 128 => {
+                    let ch = *channel as usize;
+                    let original = *key as usize;
+                    if *velocity > 0.0 {
+                        let transposed =
+                            (*key as i16 + self.value.round() as i16).clamp(0, 127) as u8;
+                        self.notes[ch][original] = transposed;
+                        self.active[ch][original] = true;
+                        self.note_ids[ch][original] = *note_id;
+                        *key = transposed;
+                    } else if self.active[ch][original] {
+                        *key = self.notes[ch][original];
+                        self.active[ch][original] = false;
+                    }
+                }
+                EventKind::NoteOff { channel, key, .. } if *channel < 16 && *key < 128 => {
+                    let ch = *channel as usize;
+                    let original = *key as usize;
+                    if self.active[ch][original] {
+                        *key = self.notes[ch][original];
+                        self.active[ch][original] = false;
+                    }
+                }
+                EventKind::NoteRelease {
+                    channel,
+                    key,
+                    note_id,
+                    velocity,
+                    choke,
+                } => {
+                    let mut ok = true;
+                    for ch in 0..16 {
+                        for original in 0..128 {
+                            if self.active[ch][original]
+                                && channel.is_none_or(|v| v as usize == ch)
+                                && key.is_none_or(|v| v as usize == original)
+                                && note_id.is_none_or(|v| v == self.note_ids[ch][original])
+                            {
+                                ok &= output.push(Event {
+                                    frame: event.frame,
+                                    kind: EventKind::NoteRelease {
+                                        channel: Some(ch as u8),
+                                        key: Some(self.notes[ch][original]),
+                                        note_id: (self.note_ids[ch][original] >= 0)
+                                            .then_some(self.note_ids[ch][original]),
+                                        velocity: *velocity,
+                                        choke: *choke,
+                                    },
+                                });
+                                self.active[ch][original] = false;
+                            }
+                        }
+                    }
+                    if !ok {
+                        self.active.fill([false; 128]);
+                        let _ = output.push(Event {
+                            frame: event.frame,
+                            kind: EventKind::AllNotesOff,
+                        });
+                        return ProcessStatus::Error;
+                    }
+                    continue;
+                }
+                EventKind::AllNotesOff => self.active.fill([false; 128]),
+                _ => {}
+            }
+            if !output.push(event) {
+                self.active.fill([false; 128]);
+                let _ = output.push(Event {
+                    frame: event.frame,
+                    kind: EventKind::AllNotesOff,
+                });
+                return ProcessStatus::Error;
+            }
+        }
+        if !AUDIO_PASSTHROUGH {
+            block.outputs.fill(0.0);
+        } else {
+            for channel in 0..block.output_channels {
+                for frame in 0..block.frames {
+                    let index = channel * block.frames + frame;
+                    block.outputs[index] = if channel < block.input_channels {
+                        block.inputs[index]
+                    } else {
+                        0.0
+                    };
+                }
+            }
+        }
+
+        ProcessStatus::Continue
+    }
+    fn reset(&mut self) {
+        self.active.fill([false; 128]);
+    }
+    fn parameter(&self, id: u32) -> Option<f64> {
+        (id == 1).then_some(self.value)
+    }
+    fn set_parameter(&mut self, id: u32, value: f64) -> Result<(), Error> {
+        if id != 1 || !value.is_finite() {
+            return Err("Invalid parameter".into());
+        }
+        self.value = PARAMETERS[0].clamp(value);
+        Ok(())
+    }
+    fn save_state(&self) -> Result<Vec<u8>, Error> {
+        Ok(self.value.to_le_bytes().to_vec())
+    }
+    fn load_state(&mut self, data: &[u8]) -> Result<(), Error> {
+        let bytes: [u8; 8] = data
+            .try_into()
+            .map_err(|_| Error::from("Invalid state length"))?;
+        self.set_parameter(1, f64::from_le_bytes(bytes))
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn state_round_trip_and_invalid_state() {
+        let mut plugin = DemoPlugin::new();
+        plugin.set_parameter(1, 1.0).unwrap();
+        let state = plugin.save_state().unwrap();
+        let mut restored = DemoPlugin::new();
+        restored.load_state(&state).unwrap();
+        assert_eq!(restored.parameter(1), Some(1.0));
+        assert!(restored.load_state(&[0]).is_err());
+        assert!(restored.set_parameter(1, f64::NAN).is_err());
+    }
+    #[test]
+    fn processor_handles_empty_block() {
+        let mut p = DemoPlugin::new();
+        let mut samples = [];
+        let mut block = AudioBlock::new(&[], &mut samples, 0, 0, 0).unwrap();
+        assert_eq!(
+            p.process(&mut block, &[], &Transport::default(), &mut NullEventSink),
+            ProcessStatus::Continue
+        );
+    }
+
+    #[test]
+    fn scoped_note_release_keeps_transposition_and_other_notes() {
+        #[derive(Default)]
+        struct Sink(Vec<Event>);
+        impl EventSink for Sink {
+            fn push(&mut self, e: Event) -> bool {
+                self.0.push(e);
+                true
+            }
+        }
+        let mut p = DemoPlugin::new();
+        p.set_parameter(1, 12.0).unwrap();
+        let mut samples = [];
+        let mut sink = Sink::default();
+        let notes = [
+            Event {
+                frame: 0,
+                kind: EventKind::NoteOn {
+                    channel: 0,
+                    key: 60,
+                    velocity: 1.0,
+                    note_id: 10,
+                },
+            },
+            Event {
+                frame: 0,
+                kind: EventKind::NoteOn {
+                    channel: 1,
+                    key: 64,
+                    velocity: 1.0,
+                    note_id: 11,
+                },
+            },
+        ];
+        p.process(
+            &mut AudioBlock::new(&[], &mut samples, 1, 0, 0).unwrap(),
+            &notes,
+            &Transport::default(),
+            &mut sink,
+        );
+        sink.0.clear();
+        let release = Event {
+            frame: 0,
+            kind: EventKind::NoteRelease {
+                channel: None,
+                key: None,
+                note_id: Some(10),
+                velocity: 0.0,
+                choke: true,
+            },
+        };
+        p.process(
+            &mut AudioBlock::new(&[], &mut samples, 1, 0, 0).unwrap(),
+            &[release],
+            &Transport::default(),
+            &mut sink,
+        );
+        assert_eq!(
+            sink.0,
+            [Event {
+                frame: 0,
+                kind: EventKind::NoteRelease {
+                    channel: Some(0),
+                    key: Some(72),
+                    note_id: Some(10),
+                    velocity: 0.0,
+                    choke: true
+                }
+            }]
+        );
+        assert!(!p.active[0][60]);
+        assert!(p.active[1][64]);
+    }
+    #[test]
+    fn audio_mode_selects_ports_and_passthrough() {
+        let input = [0.1, -0.2, 0.3, -0.4];
+        let mut output = [0.0; 4];
+        let mut block = AudioBlock::new(&input, &mut output, 2, 2, 2).unwrap();
+        DemoPlugin::new().process(&mut block, &[], &Transport::default(), &mut NullEventSink);
+        if !AUDIO_PASSTHROUGH {
+            assert_eq!(output, [0.0; 4]);
+            assert!(DemoPlugin::descriptor().inputs.is_empty());
+        } else {
+            assert_eq!(output, input);
+            assert_eq!(DemoPlugin::descriptor().inputs[0].channels, 2);
+        }
+    }
+}

@@ -1,0 +1,52 @@
+# {{ plugin_name }}
+
+Independent RVST {{ kind }} plugin by {{ vendor }}. This repository owns the
+processor, shared UI, native exports, standalone app, browser runner and xtask.
+
+```sh
+cargo build --locked
+cargo test --workspace --locked
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo xtask bundle --release
+```
+
+For local development with live browser logs:
+
+```sh
+cargo run -p plugin-standalone --features devtools
+# In another terminal, if cargo-rvst is installed:
+cargo rvst inspect --open
+```
+
+The standalone runs real native audio. The browser preview uses the same Rust
+editor against a simulated host; browser DSP is intentionally disabled.
+
+```sh
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --version 0.2.130 --locked
+cargo xtask web --serve --open
+```
+
+Record/replay a deterministic offline fixture, including MIDI and block boundaries:
+
+```sh
+cargo xtask record capture.json --blocks 64
+cargo xtask replay capture.json --step
+```
+
+`cargo xtask install` explicitly installs development bundles into user plugin
+folders. `cargo xtask bundle --release` creates bundles without installing them.
+Add `--target`, `--profile` or `--features` when needed. Native debugging uses the
+included `.vscode/launch.json` CodeLLDB configurations, or `lldb --
+target/debug/plugin-standalone` (`gdb --args` on Linux). Chrome inspects the live
+logs and browser UI; source stepping native DSP requires the native debugger.
+
+SDK source: `{{ sdk_source }}`. Registry dependencies require a published RVST
+release. Before publication use an explicit SDK override or a vendored snapshot.
+The provenance files record template inputs, identities and source. Keep the
+plugin ID and VST3 class identity unchanged after release, including renames.
+
+No global RVST tool is required for the Cargo commands above. Qualify actual
+bundles with VST3/CLAP validators and real DAWs before distributing a release.
+Tests and compilation alone do not establish host compatibility.

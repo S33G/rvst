@@ -1,0 +1,25 @@
+[package]
+repository.workspace = true
+include = ["Cargo.toml", "build.rs", "src/**", "tests/**", "templates/**"]
+name = "rvst-ops"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+toml = "0.8"
+liquid = "0.26"
+include_dir = "0.7"
+semver = "1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp"] }
