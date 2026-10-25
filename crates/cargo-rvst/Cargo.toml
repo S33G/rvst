@@ -1,0 +1,25 @@
+[package]
+repository.workspace = true
+name = "cargo-rvst"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "cargo-rvst"
+path = "src/main.rs"
+
+[dependencies]
+rvst-ops = { path = "../rvst-ops", version = "0.1.0" }
+rvst-devtools = { path = "../rvst-devtools", version = "0.1.0" }
+clap = { version = "4", features = ["derive"] }
+serde.workspace = true
+serde_json.workspace = true
+ratatui = "0.29"
+crossterm = "0.28"
+ctrlc = "3"
+base64 = "0.22"
+
+[dev-dependencies]
+tempfile = "3"

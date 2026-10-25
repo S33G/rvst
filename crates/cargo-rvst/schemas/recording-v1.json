@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rvst:schema:recording:v1",
+  "title": "RVST reproducible processing capture",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "plugin_id",
+    "config",
+    "initial_state",
+    "reproducible_start",
+    "lost_blocks",
+    "blocks"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "plugin_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "initial_state": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 255
+      }
+    },
+    "reproducible_start": {
+      "type": "boolean"
+    },
+    "lost_blocks": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "config": {
+      "type": "object",
+      "required": [
+        "sample_rate",
+        "max_frames",
+        "input_channels",
+        "output_channels"
+      ],
+      "properties": {
+        "sample_rate": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "max_frames": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "input_channels": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 256
+        },
+        "output_channels": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 256
+        }
+      },
+      "additionalProperties": false
+    },
+    "blocks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "input",
+          "output",
+          "frames",
+          "events",
+          "transport",
+          "precision"
+        ],
+        "properties": {
+          "input": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
+          },
+          "output": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
+          },
+          "frames": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "events": {
+            "type": "array"
+          },
+          "output_events": {
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "transport": {
+            "type": "object"
+          },
+          "precision": {
+            "enum": [
+              "F32",
+              "F64"
+            ]
+          },
+          "status": {
+            "enum": [
+              "Continue",
+              "Tail",
+              "Sleep",
+              "Error",
+              null
+            ]
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "start": {
+      "enum": [
+        "reset",
+        "checkpoint"
+      ],
+      "default": "reset"
+    }
+  },
+  "additionalProperties": false
+}
