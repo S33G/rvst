@@ -1,0 +1,32 @@
+name: RVST
+on: [push, pull_request]
+jobs:
+  native:
+    strategy:
+      matrix:
+        os: [macos-14, windows-latest, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.0
+          components: rustfmt, clippy
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libx11-dev libxcursor-dev libxi-dev libgl1-mesa-dev libxrandr-dev
+      - run: cargo fmt --all --check
+      - run: cargo test --workspace --locked
+      - run: cargo test -p rvst-clap -p rvst-vst3 -p rvst-standalone --features devtools --locked
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo run -p cargo-rvst -- new ../rvst-generated --template gain --sdk-path . --vendor-sdk --non-interactive
+      - run: cargo test --manifest-path ../rvst-generated/Cargo.toml --workspace --locked
+  wasm:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.0
+          targets: wasm32-unknown-unknown
+      - run: cargo check -p rvst-web --target wasm32-unknown-unknown --locked
+      - run: cargo doc --workspace --exclude rvst-platform --exclude rvst-standalone --exclude rvst-clap --exclude rvst-vst3 --no-deps
