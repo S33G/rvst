@@ -1,6 +1,14 @@
 name: RVST
 on: [push, pull_request]
 jobs:
+  docs:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -m unittest discover -s scripts/tests -p 'test_check_docs.py'
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+      - run: python3 scripts/check-docs.py
   native:
     strategy:
       matrix:
@@ -29,4 +37,6 @@ jobs:
           toolchain: 1.98.0
           targets: wasm32-unknown-unknown
       - run: cargo check -p rvst-web --target wasm32-unknown-unknown --locked
-      - run: cargo doc --workspace --exclude rvst-platform --exclude rvst-standalone --exclude rvst-clap --exclude rvst-vst3 --no-deps
+      - run: cargo doc --workspace --exclude rvst-platform --exclude rvst-standalone --exclude rvst-clap --exclude rvst-vst3 --no-deps --locked
+        env:
+          RUSTDOCFLAGS: "-D rustdoc::broken_intra_doc_links"
