@@ -3,7 +3,11 @@
 use rvst_core::*;
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering},
+    atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering},
+};
+mod state;
+pub use state::{
+    NativeState, decode_native_state, encode_native_state, load_project_state, save_project_state,
 };
 
 /// Catch a plugin panic before it crosses a native ABI boundary. A panic payload
@@ -18,6 +22,12 @@ pub fn boundary<T>(fallback: T, f: impl FnOnce() -> T) -> T {
     }
 }
 
+const EDIT_KIND_MASK: u64 = 7;
+const EDIT_QUEUED: u64 = 1;
+const EDIT_APPLYING: u64 = 2;
+const EDIT_HOST_QUEUED: u64 = 3;
+const EDIT_HOST_SENT: u64 = 4;
+
 pub struct ParameterMirror {
     pub latency: AtomicU32,
     pub ui_metrics: Option<Arc<rvst_runtime::Metrics>>,
@@ -25,9 +35,13 @@ pub struct ParameterMirror {
     pub inspector_url: Option<String>,
     pub meters: Arc<rvst_ui::Meters>,
     pub descriptor: &'static PluginDescriptor,
+    pub edit_history: EditHistory,
     values: Vec<AtomicU64>,
     edits: Vec<AtomicU64>,
-    dirty: Vec<AtomicBool>,
+    dirty: Vec<AtomicU64>,
+    edit_generations: Vec<AtomicU64>,
+    edit_sequence: AtomicU64,
+    generation: AtomicU64,
     gestures: Vec<AtomicU8>,
 }
 impl ParameterMirror {
@@ -46,6 +60,9 @@ impl ParameterMirror {
             inspector_url,
             meters: Arc::new(rvst_ui::Meters::default()),
             descriptor,
+            edit_history: EditHistory::default(),
+            generation: AtomicU64::new(1),
+            edit_sequence: AtomicU64::new(1),
             values: descriptor
                 .parameters
                 .iter()
@@ -59,7 +76,12 @@ impl ParameterMirror {
             dirty: descriptor
                 .parameters
                 .iter()
-                .map(|_| AtomicBool::new(false))
+                .map(|_| AtomicU64::new(0))
+                .collect(),
+            edit_generations: descriptor
+                .parameters
+                .iter()
+                .map(|_| AtomicU64::new(0))
                 .collect(),
             gestures: descriptor
                 .parameters
@@ -71,8 +93,7 @@ impl ParameterMirror {
     /// Snapshot applied/pending values for a diagnostic worker. Allocates; never call on audio.
     pub fn parameters_snapshot(&self) -> serde_json::Value {
         serde_json::json!(self.descriptor.parameters.iter().enumerate().map(|(i, p)| {
-            let pending = self.dirty[i].load(Ordering::Acquire)
-                .then(|| f64::from_bits(self.edits[i].load(Ordering::Acquire)));
+            let pending = self.pending(i);
             serde_json::json!({"id":p.id,"name":p.name,"unit":p.unit,"min":p.min,"max":p.max,
                 "value":f64::from_bits(self.values[i].load(Ordering::Acquire)),"pending":pending})
         }).collect::<Vec<_>>())
@@ -85,24 +106,110 @@ impl ParameterMirror {
     }
     pub fn get(&self, id: u32) -> Option<f64> {
         let i = self.descriptor.parameters.iter().position(|p| p.id == id)?;
-        Some(f64::from_bits(if self.dirty[i].load(Ordering::Acquire) {
-            self.edits[i].load(Ordering::Acquire)
-        } else {
-            self.values[i].load(Ordering::Acquire)
-        }))
+        Some(
+            self.pending(i)
+                .unwrap_or_else(|| f64::from_bits(self.values[i].load(Ordering::Acquire))),
+        )
+    }
+    fn pending(&self, index: usize) -> Option<f64> {
+        let marker = self.dirty[index].load(Ordering::Acquire);
+        (marker != 0
+            && self.edit_generations[index].load(Ordering::Acquire) == self.state_generation())
+        .then(|| f64::from_bits(self.edits[index].load(Ordering::Acquire)))
+    }
+    /// Generation of the native state, shared with deferred host notifications.
+    pub fn state_generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
+    }
+    /// Call only after a successful native restore, with the audio consumer excluded.
+    /// The generation rejects even a UI producer that resumes after the restore.
+    /// Gesture markers are preserved so an already forwarded begin can still end.
+    /// This path performs only atomic operations and is safe on host state callbacks.
+    pub fn state_restored(&self) {
+        self.discard_pending_edits();
+        self.edit_history.invalidate();
+    }
+    fn discard_pending_edits(&self) {
+        self.generation.fetch_add(1, Ordering::AcqRel);
     }
     pub fn publish(&self, id: u32, value: f64) {
         if let Some(i) = self.descriptor.parameters.iter().position(|p| p.id == id) {
             self.values[i].store(value.to_bits(), Ordering::Release);
+            let marker = self.dirty[i].load(Ordering::Acquire);
+            if marker & EDIT_KIND_MASK == EDIT_APPLYING {
+                let _ =
+                    self.dirty[i].compare_exchange(marker, 0, Ordering::AcqRel, Ordering::Acquire);
+            }
         }
     }
     pub fn edit(&self, id: u32, value: f64) {
         if let Some(i) = self.descriptor.parameters.iter().position(|p| p.id == id) {
-            self.edits[i].store(
-                self.descriptor.parameters[i].clamp(value).to_bits(),
-                Ordering::Release,
+            self.queue_edit(i, value, self.state_generation());
+        }
+    }
+    fn queue_edit(&self, index: usize, value: f64, generation: u64) {
+        self.queue_edit_kind(index, value, generation, EDIT_QUEUED);
+    }
+    fn queue_edit_kind(&self, index: usize, value: f64, generation: u64, kind: u64) -> u64 {
+        let marker = (self.edit_sequence.fetch_add(1, Ordering::Relaxed) << 3) | kind;
+        self.edits[index].store(
+            self.descriptor.parameters[index].clamp(value).to_bits(),
+            Ordering::Release,
+        );
+        self.edit_generations[index].store(generation, Ordering::Release);
+        self.dirty[index].store(marker, Ordering::Release);
+        marker
+    }
+    /// Retain VST editor intent while the host carries the value to its processor.
+    /// Unlike ordinary edits, this is never consumed by `Runtime::edits`.
+    pub fn defer_host_edit(&self, id: u32, value: f64, generation: u64) -> u64 {
+        self.descriptor
+            .parameters
+            .iter()
+            .position(|p| p.id == id)
+            .map_or(0, |i| {
+                self.queue_edit_kind(i, value, generation, EDIT_HOST_QUEUED)
+            })
+    }
+    pub fn host_edit_dispatched(&self, id: u32, marker: u64) {
+        if marker & EDIT_KIND_MASK == EDIT_HOST_QUEUED
+            && let Some(i) = self.descriptor.parameters.iter().position(|p| p.id == id)
+        {
+            let _ = self.dirty[i].compare_exchange(
+                marker,
+                (marker & !EDIT_KIND_MASK) | EDIT_HOST_SENT,
+                Ordering::AcqRel,
+                Ordering::Acquire,
             );
-            self.dirty[i].store(true, Ordering::Release);
+        }
+    }
+    /// Capture before applying an incoming host event, so an older event cannot
+    /// acknowledge a newer UI dispatch that occurs while processing it.
+    pub fn host_edit_token(&self, id: u32) -> u64 {
+        self.descriptor
+            .parameters
+            .iter()
+            .position(|p| p.id == id)
+            .map_or(0, |i| {
+                let marker = self.dirty[i].load(Ordering::Acquire);
+                if marker & EDIT_KIND_MASK == EDIT_HOST_SENT
+                    && self.edit_generations[i].load(Ordering::Acquire) == self.state_generation()
+                {
+                    marker
+                } else {
+                    0
+                }
+            })
+    }
+    /// An explicit host event may acknowledge or supersede its captured target.
+    /// Ordinary processor snapshots cannot, nor can events older than a target.
+    pub fn acknowledge_host_edit(&self, id: u32, value: f64, token: u64) {
+        if let Some(i) = self.descriptor.parameters.iter().position(|p| p.id == id) {
+            self.values[i].store(value.to_bits(), Ordering::Release);
+            if token & EDIT_KIND_MASK == EDIT_HOST_SENT {
+                let _ =
+                    self.dirty[i].compare_exchange(token, 0, Ordering::AcqRel, Ordering::Acquire);
+            }
         }
     }
     pub fn gesture(&self, id: u32, begin: bool) {
@@ -114,10 +221,28 @@ impl ParameterMirror {
         self.gestures[index].swap(0, Ordering::AcqRel)
     }
     pub fn retry_edit(&self, index: usize) {
-        self.dirty[index].store(true, Ordering::Release);
+        // Called by the audio consumer while the same state-restore gate is held.
+        // Do not replace an edit queued by the UI since take_edit.
+        let _ = self.dirty[index].compare_exchange(
+            0,
+            (self.edit_sequence.fetch_add(1, Ordering::Relaxed) << 3) | EDIT_QUEUED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
     }
     pub fn take_edit(&self, index: usize) -> Option<(u32, f64)> {
-        if self.dirty[index].swap(false, Ordering::AcqRel) {
+        let marker = self.dirty[index].load(Ordering::Acquire);
+        if marker & EDIT_KIND_MASK == EDIT_QUEUED
+            && self.edit_generations[index].load(Ordering::Acquire) == self.state_generation()
+            && self.dirty[index]
+                .compare_exchange(
+                    marker,
+                    (marker & !EDIT_KIND_MASK) | EDIT_APPLYING,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
+        {
             Some((
                 self.descriptor.parameters[index].id,
                 f64::from_bits(self.edits[index].load(Ordering::Acquire)),
@@ -131,6 +256,9 @@ impl ParameterMirror {
 /// UI-only view. Host adapters own gesture forwarding; atomics carry plain values.
 pub struct MirrorEditor(pub Arc<ParameterMirror>);
 impl EditorHost for MirrorEditor {
+    fn edit_history(&self) -> Option<EditHistory> {
+        Some(self.0.edit_history.clone())
+    }
     fn editor_context(&self) -> Option<EditorContext> {
         self.0.editor_context.clone()
     }
@@ -723,6 +851,137 @@ mod tests {
     #[global_allocator]
     static ALLOC: rvst_test::GuardedAllocator<std::alloc::System> =
         rvst_test::GuardedAllocator(std::alloc::System);
+    #[test]
+    fn history_survives_editor_reopen_and_automation_but_is_per_instance() {
+        let mirror = ParameterMirror::new(fixture::Gain::descriptor());
+        let mut editor = HistoryHost::new(MirrorEditor(mirror.clone()));
+        editor.begin_edit(42);
+        editor.set_parameter(42, 0.5);
+        editor.end_edit(42);
+        assert!(editor.undo_label().is_some());
+        drop(editor);
+
+        assert_eq!(mirror.take_edit(0), Some((42, 0.5)));
+        mirror.publish(42, 0.75);
+        let mut reopened = HistoryHost::new(MirrorEditor(mirror.clone()));
+        assert!(reopened.undo_label().is_some());
+        assert!(reopened.undo().unwrap());
+        assert_eq!(mirror.get(42), Some(1.));
+        assert!(!reopened.undo().unwrap());
+        assert!(reopened.redo_label().is_some());
+        mirror.publish(42, 1.5);
+        assert!(reopened.redo_label().is_some());
+        let other = HistoryHost::new(MirrorEditor(ParameterMirror::new(
+            fixture::Gain::descriptor(),
+        )));
+        assert!(other.undo_label().is_none());
+    }
+    #[test]
+    fn restored_state_discards_pending_and_in_flight_old_edits_without_allocation() {
+        let mirror = ParameterMirror::new(fixture::Gain::descriptor());
+        let before_restore = mirror.generation.load(Ordering::Acquire);
+        mirror.edit(42, 0.25);
+        let guard = rvst_test::AllocationGuard::start();
+        mirror.state_restored();
+        mirror.publish(42, 0.75);
+        let restored = mirror.get(42);
+        // The UI may have read the old generation immediately before the restore.
+        mirror.queue_edit(0, 0.5, before_restore);
+        let pending = mirror.take_edit(0);
+        let current = mirror.get(42);
+        let counts = guard.finish();
+        assert_eq!(counts, rvst_test::AllocationCounts::default());
+        assert_eq!(restored, Some(0.75));
+        assert_eq!(pending, None);
+        assert_eq!(current, Some(0.75));
+        mirror.edit(42, 1.25);
+        assert_eq!(mirror.get(42), Some(1.25));
+        assert_eq!(mirror.take_edit(0), Some((42, 1.25)));
+    }
+    #[test]
+    fn retry_preserves_a_newer_pending_edit() {
+        let mirror = ParameterMirror::new(fixture::Gain::descriptor());
+        mirror.edit(42, 0.25);
+        assert_eq!(mirror.take_edit(0), Some((42, 0.25)));
+        mirror.edit(42, 0.75);
+        mirror.retry_edit(0);
+        assert_eq!(mirror.take_edit(0), Some((42, 0.75)));
+    }
+    #[test]
+    fn history_readback_keeps_target_during_audio_handoff() {
+        struct HandoffEditor(MirrorEditor);
+        impl EditorHost for HandoffEditor {
+            fn edit_history(&self) -> Option<EditHistory> {
+                self.0.edit_history()
+            }
+            fn descriptor(&self) -> &'static PluginDescriptor {
+                self.0.descriptor()
+            }
+            fn parameter(&self, id: u32) -> Option<f64> {
+                // Force the audio consumer to take a value immediately before
+                // HistoryHost reads back the accepted edit, before DSP applies it.
+                let _ = self.0.0.take_edit(0);
+                self.0.parameter(id)
+            }
+            fn begin_edit(&mut self, id: u32) {
+                self.0.begin_edit(id);
+            }
+            fn set_parameter(&mut self, id: u32, value: f64) {
+                self.0.set_parameter(id, value);
+            }
+            fn end_edit(&mut self, id: u32) {
+                self.0.end_edit(id);
+            }
+            fn save_state(&mut self) -> Result<Vec<u8>, Error> {
+                self.0.save_state()
+            }
+            fn load_state(&mut self, data: &[u8]) -> Result<(), Error> {
+                self.0.load_state(data)
+            }
+        }
+        let mirror = ParameterMirror::new(fixture::Gain::descriptor());
+        let mut editor = HistoryHost::new(HandoffEditor(MirrorEditor(mirror.clone())));
+        editor.begin_edit(42);
+        editor.set_parameter(42, 0.25);
+        editor.end_edit(42);
+        assert_eq!(mirror.get(42), Some(0.25));
+        assert!(editor.undo_label().is_some());
+        mirror.publish(42, 0.25);
+        assert!(editor.undo().unwrap());
+        assert_eq!(mirror.get(42), Some(1.));
+    }
+    #[test]
+    fn deferred_host_target_waits_for_explicit_ack_and_can_be_superseded() {
+        let mirror = ParameterMirror::new(fixture::Gain::descriptor());
+        let token = mirror.defer_host_edit(42, 0.25, mirror.state_generation());
+        assert_eq!(mirror.take_edit(0), None);
+        mirror.publish(42, 1.);
+        assert_eq!(mirror.get(42), Some(0.25));
+        mirror.acknowledge_host_edit(42, 0.75, mirror.host_edit_token(42));
+        assert_eq!(mirror.get(42), Some(0.25));
+        mirror.host_edit_dispatched(42, token);
+        mirror.acknowledge_host_edit(42, 0.75, mirror.host_edit_token(42));
+        assert_eq!(mirror.get(42), Some(0.75));
+        mirror.publish(42, 0.5);
+        assert_eq!(mirror.get(42), Some(0.5));
+        let old = mirror.defer_host_edit(42, 0.25, mirror.state_generation());
+        let new = mirror.defer_host_edit(42, 1.5, mirror.state_generation());
+        mirror.host_edit_dispatched(42, old);
+        mirror.acknowledge_host_edit(42, 0.25, mirror.host_edit_token(42));
+        assert_eq!(mirror.get(42), Some(1.5));
+        mirror.host_edit_dispatched(42, new);
+        mirror.acknowledge_host_edit(42, 1.5, mirror.host_edit_token(42));
+        assert_eq!(mirror.get(42), Some(1.5));
+        let old = mirror.defer_host_edit(42, 0.25, mirror.state_generation());
+        mirror.host_edit_dispatched(42, old);
+        let received = mirror.host_edit_token(42);
+        let newer = mirror.defer_host_edit(42, 1.75, mirror.state_generation());
+        mirror.host_edit_dispatched(42, newer);
+        mirror.acknowledge_host_edit(42, 0.25, received);
+        assert_eq!(mirror.get(42), Some(1.75));
+        mirror.acknowledge_host_edit(42, 0.5, mirror.host_edit_token(42));
+        assert_eq!(mirror.get(42), Some(0.5));
+    }
     #[test]
     fn overflow_releases_notes_without_heap_activity() {
         let mut rt = Runtime::<fixture::Gain>::new();

@@ -170,6 +170,7 @@ struct Processor<P: Plugin> {
     gate: rvst_adapter::AccessGate,
     runtime: UnsafeCell<Runtime<P>>,
     initial: UnsafeCell<Vec<f64>>,
+    host_edit_tokens: UnsafeCell<Vec<u64>>,
     input_active: Vec<AtomicBool>,
     output_active: Vec<AtomicBool>,
     active: AtomicBool,
@@ -188,6 +189,7 @@ impl<P: Plugin> Processor<P> {
             gate: Default::default(),
             runtime: UnsafeCell::new(runtime),
             initial: UnsafeCell::new(vec![0.; P::descriptor().parameters.len()]),
+            host_edit_tokens: UnsafeCell::new(vec![0; P::descriptor().parameters.len()]),
             input_active: P::descriptor()
                 .inputs
                 .iter()
@@ -327,10 +329,10 @@ impl<P: Plugin> IComponentTrait for Processor<P> {
             };
             let rt = &mut *self.runtime.get();
             rt.retired_errors.collect_on_control_thread();
-            if rt.plugin.load_state(&bytes).is_err() {
+            if rvst_adapter::load_project_state(&mut *rt.plugin, &rt.mirror, None, &bytes).is_err()
+            {
                 return kResultFalse;
             }
-            rt.publish();
             rt.debug_lifecycle("Native state loaded");
             kResultOk
         })
@@ -342,7 +344,7 @@ impl<P: Plugin> IComponentTrait for Processor<P> {
             };
             let rt = &mut *self.runtime.get();
             rt.retired_errors.collect_on_control_thread();
-            let Ok(bytes) = rt.plugin.save_state() else {
+            let Ok(bytes) = rvst_adapter::save_project_state(&mut *rt.plugin, &rt.mirror) else {
                 return kResultFalse;
             };
             drop(_access);
@@ -500,8 +502,10 @@ impl<P: Plugin> IAudioProcessorTrait for Processor<P> {
             }
             let n = d.numSamples as usize;
             let initial = &mut *self.initial.get();
+            let host_edit_tokens = &mut *self.host_edit_tokens.get();
             for (i, p) in desc.parameters.iter().enumerate() {
                 initial[i] = p.normalize(rt.plugin.parameter(p.id).unwrap_or(p.default));
+                host_edit_tokens[i] = rt.mirror.host_edit_token(p.id);
             }
             if n == 0 {
                 if let Some(ch) = ComRef::from_raw(d.inputParameterChanges) {
@@ -512,9 +516,20 @@ impl<P: Plugin> IAudioProcessorTrait for Processor<P> {
                                 let mut frame = 0;
                                 let mut value = 0.;
                                 if q.getPoint(count - 1, &mut frame, &mut value) == kResultOk
-                                    && let Some(p) = parameter::<P>(q.getParameterId())
+                                    && let Some((index, p)) = desc
+                                        .parameters
+                                        .iter()
+                                        .enumerate()
+                                        .find(|(_, p)| p.id == q.getParameterId())
                                 {
                                     rt.set_parameter_rt(p.id, p.denormalize(value));
+                                    if let Some(applied) = rt.plugin.parameter(p.id) {
+                                        rt.mirror.acknowledge_host_edit(
+                                            p.id,
+                                            applied,
+                                            host_edit_tokens[index],
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -720,6 +735,24 @@ impl<P: Plugin> IAudioProcessorTrait for Processor<P> {
                 (*d.outputs.add(k)).silenceFlags = 0;
             }
             rt.output_reset_pending |= output_lost;
+            if let Some(changes) = ComRef::from_raw(d.inputParameterChanges) {
+                for index in 0..changes.getParameterCount() {
+                    if let Some(queue) = ComRef::from_raw(changes.getParameterData(index))
+                        && queue.getPointCount() > 0
+                        && let Some(parameter_index) = desc
+                            .parameters
+                            .iter()
+                            .position(|p| p.id == queue.getParameterId())
+                        && let Some(applied) = rt.plugin.parameter(queue.getParameterId())
+                    {
+                        rt.mirror.acknowledge_host_edit(
+                            queue.getParameterId(),
+                            applied,
+                            host_edit_tokens[parameter_index],
+                        );
+                    }
+                }
+            }
             if output_lost {
                 rt.debug_event(6, 1.);
             }
@@ -1078,12 +1111,12 @@ impl<P: Plugin> IEditControllerTrait for Controller<P> {
             let Some(data) = read_state(s) else {
                 return kResultFalse;
             };
-            if (&mut *self.plugin.get()).load_state(&data).is_ok() {
-                for p in P::descriptor().parameters {
-                    if let Some(v) = (&*self.plugin.get()).parameter(p.id) {
-                        self.editor_mirror().publish(p.id, v);
-                    }
-                }
+            let mirror = self.editor_mirror();
+            let fallback =
+                (!std::sync::Arc::ptr_eq(&mirror, &self.mirror)).then_some(self.mirror.as_ref());
+            if rvst_adapter::load_project_state(&mut **self.plugin.get(), &mirror, fallback, &data)
+                .is_ok()
+            {
                 kResultOk
             } else {
                 kResultFalse
@@ -1092,12 +1125,9 @@ impl<P: Plugin> IEditControllerTrait for Controller<P> {
     }
     unsafe fn getState(&self, s: *mut IBStream) -> tresult {
         boundary(kInternalError, || {
-            for p in P::descriptor().parameters {
-                if let Some(v) = self.editor_mirror().get(p.id) {
-                    let _ = (&mut *self.plugin.get()).set_parameter(p.id, v);
-                }
-            }
-            let Ok(data) = (&*self.plugin.get()).save_state() else {
+            let Ok(data) =
+                rvst_adapter::save_project_state(&mut **self.plugin.get(), &self.editor_mirror())
+            else {
                 return kResultFalse;
             };
             write_state(s, &data)
@@ -1219,11 +1249,17 @@ impl<P: Plugin> IEditControllerTrait for Controller<P> {
             let Some(p) = parameter::<P>(id) else {
                 return kInvalidArgument;
             };
+            let mirror = self.editor_mirror();
+            let host_edit_token = mirror.host_edit_token(id);
             if (&mut *self.plugin.get())
                 .set_parameter(id, p.denormalize(value))
                 .is_ok()
             {
-                self.editor_mirror().publish(id, p.denormalize(value));
+                if std::sync::Arc::ptr_eq(&mirror, &self.mirror) {
+                    mirror.acknowledge_host_edit(id, p.denormalize(value), host_edit_token);
+                } else {
+                    mirror.publish(id, p.denormalize(value));
+                }
                 kResultOk
             } else {
                 kResultFalse
@@ -1480,6 +1516,9 @@ struct VstEditor {
     mailbox: std::sync::Arc<dispatch::Mailbox>,
 }
 impl rvst_core::EditorHost for VstEditor {
+    fn edit_history(&self) -> Option<rvst_core::EditHistory> {
+        Some(self.mirror.edit_history.clone())
+    }
     fn editor_context(&self) -> Option<rvst_core::EditorContext> {
         self.mirror.editor_context.clone()
     }
@@ -1501,13 +1540,16 @@ impl rvst_core::EditorHost for VstEditor {
     }
     fn set_parameter(&mut self, id: u32, v: f64) {
         if let Some(p) = self.mirror.descriptor.parameter(id) {
+            let generation = self.mirror.state_generation();
             let v = p.clamp(v);
-            self.mirror.publish(id, v);
+            let token = self.mirror.defer_host_edit(id, v, generation);
             #[cfg(target_os = "linux")]
-            self.mailbox.value(id, p.normalize(v));
+            self.mailbox
+                .value_at_generation(id, p.normalize(v), generation, token);
             #[cfg(not(target_os = "linux"))]
             unsafe {
                 if let Some(h) = ComRef::from_raw(self.handler.0) {
+                    self.mirror.host_edit_dispatched(id, token);
                     h.performEdit(id, p.normalize(v));
                 }
             }
@@ -1675,11 +1717,9 @@ impl IPlugViewTrait for View {
                 (&mut *self.window.get()).take();
                 (&mut *self.dispatcher.get()).take();
                 if !_frame.is_null() {
-                    let Some(dispatcher) = dispatch::Dispatch::new(
-                        _frame,
-                        self.handler.clone(),
-                        self.mirror.descriptor,
-                    ) else {
+                    let Some(dispatcher) =
+                        dispatch::Dispatch::new(_frame, self.handler.clone(), self.mirror.clone())
+                    else {
                         return kResultFalse;
                     };
                     *self.dispatcher.get() = Some(dispatcher);
@@ -1711,6 +1751,212 @@ mod tests {
         rvst_test::GuardedAllocator(std::alloc::System);
     pub(super) mod fixture {
         include!("../../rvst-adapter/test-support/plugin.rs");
+    }
+    type StateBytes = std::rc::Rc<std::cell::RefCell<Vec<u8>>>;
+    struct StateStream {
+        data: StateBytes,
+        offset: Cell<usize>,
+    }
+    impl Class for StateStream {
+        type Interfaces = (IBStream,);
+    }
+    impl IBStreamTrait for StateStream {
+        unsafe fn read(&self, out: *mut c_void, size: i32, read: *mut i32) -> tresult {
+            let data = self.data.borrow();
+            let count = (size as usize).min(data.len() - self.offset.get());
+            ptr::copy_nonoverlapping(data.as_ptr().add(self.offset.get()), out as *mut u8, count);
+            self.offset.set(self.offset.get() + count);
+            *read = count as i32;
+            kResultOk
+        }
+        unsafe fn write(&self, bytes: *mut c_void, size: i32, written: *mut i32) -> tresult {
+            self.data
+                .borrow_mut()
+                .extend_from_slice(std::slice::from_raw_parts(
+                    bytes as *const u8,
+                    size as usize,
+                ));
+            *written = size;
+            kResultOk
+        }
+        unsafe fn seek(&self, _: i64, _: i32, _: *mut i64) -> tresult {
+            kNotImplemented
+        }
+        unsafe fn tell(&self, _: *mut i64) -> tresult {
+            kNotImplemented
+        }
+    }
+    fn state_stream(data: Vec<u8>) -> vst3::ComPtr<IBStream> {
+        state_buffer(data).0
+    }
+    fn state_buffer(data: Vec<u8>) -> (vst3::ComPtr<IBStream>, StateBytes) {
+        let data = std::rc::Rc::new(std::cell::RefCell::new(data));
+        let stream = ComWrapper::new(StateStream {
+            data: data.clone(),
+            offset: Cell::new(0),
+        })
+        .to_com_ptr::<IBStream>()
+        .unwrap();
+        (stream, data)
+    }
+    fn history_editor(
+        mirror: std::sync::Arc<rvst_adapter::ParameterMirror>,
+    ) -> rvst_core::HistoryHost<VstEditor> {
+        rvst_core::HistoryHost::new(VstEditor {
+            #[cfg(target_os = "linux")]
+            mailbox: dispatch::Mailbox::new(mirror.clone()),
+            mirror,
+            #[cfg(not(target_os = "linux"))]
+            handler: Handler(ptr::null_mut()),
+        })
+    }
+    fn record_edit(editor: &mut impl rvst_core::EditorHost) {
+        editor.begin_edit(42);
+        editor.set_parameter(42, 0.25);
+        editor.end_edit(42);
+        assert!(editor.undo_label().is_some());
+    }
+    fn test_controller(connected: bool) -> Controller<fixture::Gain> {
+        let fallback = rvst_adapter::ParameterMirror::new(fixture::Gain::descriptor());
+        let linked =
+            connected.then(|| rvst_adapter::ParameterMirror::new(fixture::Gain::descriptor()));
+        Controller::<fixture::Gain> {
+            connection: connection::Endpoint::default(),
+            linked: UnsafeCell::new(linked),
+            mirror: fallback,
+            plugin: UnsafeCell::new(rvst_adapter::DropShield::new(fixture::Gain::new())),
+            handler: Cell::new(ptr::null_mut()),
+            host_context: Cell::new(ptr::null_mut()),
+            timer: UnsafeCell::new(None),
+            editor: rvst_ui::default_editor,
+        }
+    }
+    fn assert_project_roundtrip(
+        mirror: std::sync::Arc<rvst_adapter::ParameterMirror>,
+        save: impl Fn(*mut IBStream) -> tresult,
+        load: impl Fn(*mut IBStream) -> tresult,
+    ) {
+        use rvst_core::EditorHost;
+        let mut editor = history_editor(mirror.clone());
+        record_edit(&mut editor);
+        editor.set_parameter(42, 0.5);
+        assert!(editor.undo().unwrap());
+        let (output, bytes) = state_buffer(Vec::new());
+        assert_eq!(save(output.as_ptr()), kResultOk);
+        let saved = bytes.borrow().clone();
+        let decoded =
+            rvst_adapter::decode_native_state(fixture::Gain::descriptor(), &saved).unwrap();
+        assert_eq!(decoded.plugin_state, 0.25f64.to_le_bytes());
+        assert!(decoded.history.is_some());
+        editor.set_parameter(42, 1.5);
+        let invalid_history = rvst_adapter::encode_native_state(
+            fixture::Gain::descriptor(),
+            &1.75f64.to_le_bytes(),
+            b"corrupt history",
+        )
+        .unwrap();
+        let invalid = state_stream(invalid_history);
+        assert_eq!(load(invalid.as_ptr()), kResultFalse);
+        assert_eq!(mirror.get(42), Some(1.5));
+        assert!(editor.undo_label().is_some());
+        let saved = state_stream(saved);
+        assert_eq!(load(saved.as_ptr()), kResultOk);
+        assert_eq!(mirror.get(42), Some(0.25));
+        assert!(editor.undo_label().is_some());
+        assert!(editor.redo_label().is_some());
+        assert!(editor.redo().unwrap());
+        assert_eq!(mirror.get(42), Some(0.5));
+        assert!(editor.undo().unwrap());
+        assert!(editor.undo().unwrap());
+        assert_eq!(mirror.get(42), Some(1.));
+        assert!(!editor.undo().unwrap());
+    }
+    #[test]
+    fn processor_and_controller_project_state_roundtrip_preserves_history() {
+        unsafe {
+            let processor = Processor::<fixture::Gain>::new();
+            assert_project_roundtrip(
+                (&*processor.runtime.get()).mirror.clone(),
+                |stream| processor.getState(stream),
+                |stream| processor.setState(stream),
+            );
+            for connected in [false, true] {
+                let controller = test_controller(connected);
+                assert_project_roundtrip(
+                    controller.editor_mirror(),
+                    |stream| controller.getState(stream),
+                    |stream| controller.setState(stream),
+                );
+            }
+        }
+    }
+    #[test]
+    fn zero_frame_flush_preserves_undispatched_editor_intent_for_project_save() {
+        use rvst_core::EditorHost;
+        unsafe {
+            let processor = Processor::<fixture::Gain>::new();
+            let mirror = (&*processor.runtime.get()).mirror.clone();
+            let mut editor = history_editor(mirror.clone());
+            record_edit(&mut editor);
+            let mut data: ProcessData = std::mem::zeroed();
+            assert_eq!(processor.process(&mut data), kResultOk);
+            assert_eq!((&*processor.runtime.get()).plugin.parameter(42), Some(1.));
+            assert_eq!(editor.parameter(42), Some(0.25));
+            let (output, bytes) = state_buffer(Vec::new());
+            assert_eq!(processor.getState(output.as_ptr()), kResultOk);
+            let saved = bytes.borrow();
+            let decoded =
+                rvst_adapter::decode_native_state(fixture::Gain::descriptor(), &saved).unwrap();
+            assert_eq!(decoded.plugin_state, 0.25f64.to_le_bytes());
+            assert!(decoded.history.is_some());
+        }
+    }
+    #[test]
+    fn processor_restore_invalidates_reopened_history_only_on_success() {
+        use rvst_core::EditorHost;
+        unsafe {
+            let processor = Processor::<fixture::Gain>::new();
+            let mirror = (&*processor.runtime.get()).mirror.clone();
+            let mut editor = history_editor(mirror.clone());
+            record_edit(&mut editor);
+            drop(editor);
+            let reopened = history_editor(mirror.clone());
+            assert!(reopened.undo_label().is_some());
+            let bad = state_stream(vec![0]);
+            assert_eq!(processor.setState(bad.as_ptr()), kResultFalse);
+            assert!(reopened.undo_label().is_some());
+            let saved = state_stream(0.75f64.to_le_bytes().to_vec());
+            assert_eq!(processor.setState(saved.as_ptr()), kResultOk);
+            assert!(reopened.undo_label().is_none());
+            assert_eq!(mirror.get(42), Some(0.75));
+        }
+    }
+    #[test]
+    fn controller_restore_invalidates_connected_and_fallback_history_only_on_success() {
+        use rvst_core::EditorHost;
+        unsafe {
+            for connected in [false, true] {
+                let controller = test_controller(connected);
+                let mut editor = history_editor(controller.editor_mirror());
+                record_edit(&mut editor);
+                let mut fallback_editor = history_editor(controller.mirror.clone());
+                if connected {
+                    record_edit(&mut fallback_editor);
+                }
+                assert_eq!(controller.setParamNormalized(42, 0.4), kResultOk);
+                assert!(editor.undo_label().is_some());
+                let bad = state_stream(vec![0]);
+                assert_eq!(controller.setState(bad.as_ptr()), kResultFalse);
+                assert!(editor.undo_label().is_some());
+                assert!(fallback_editor.undo_label().is_some());
+                let saved = state_stream(0.75f64.to_le_bytes().to_vec());
+                assert_eq!(controller.setState(saved.as_ptr()), kResultOk);
+                assert!(editor.undo_label().is_none());
+                assert!(fallback_editor.undo_label().is_none());
+                assert_eq!(controller.editor_mirror().get(42), Some(0.75));
+                assert_eq!(controller.mirror.get(42), Some(0.75));
+            }
+        }
     }
     struct Queue(Vec<(i32, f64)>);
     impl Class for Queue {

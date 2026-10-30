@@ -1,0 +1,4 @@
+interface:
+  display_name: "RVST: New plugin"
+  short_description: "Start an independent Rust audio plugin"
+  default_prompt: "Use $rvst-new to create my Rust audio plugin with RVST."

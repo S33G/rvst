@@ -1,0 +1,4 @@
+interface:
+  display_name: "RVST: Diagnose"
+  short_description: "Diagnose RVST audio and hosting failures"
+  default_prompt: "Use $rvst-debug to investigate this RVST problem."

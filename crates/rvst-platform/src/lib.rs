@@ -60,7 +60,7 @@ mod native {
         }
     }
     struct App {
-        host: Box<dyn EditorHost + Send>,
+        host: rvst_core::HistoryHost<Box<dyn EditorHost + Send>>,
         editor: EditorFn,
         inspector_url: Option<String>,
         meters: Option<std::sync::Arc<rvst_ui::Meters>>,
@@ -68,13 +68,25 @@ mod native {
         deadline: Option<std::time::Instant>,
     }
     impl App {
+        fn new(host: Box<dyn EditorHost + Send>, editor: EditorFn, options: EditorOptions) -> Self {
+            Self {
+                host: rvst_core::HistoryHost::new(host),
+                editor,
+                inspector_url: options.inspector_url,
+                meters: options.meters,
+                ui_metrics: options.ui_metrics,
+                deadline: options
+                    .close_after
+                    .map(|duration| std::time::Instant::now() + duration),
+            }
+        }
         fn draw_editor(&mut self, ctx: &egui::Context) {
             if let Some(metrics) = &self.ui_metrics {
                 let start = std::time::Instant::now();
-                (self.editor)(ctx, self.host.as_mut());
+                rvst_ui::editor_frame(ctx, &mut self.host, self.editor);
                 metrics.record_ui_frame(start.elapsed().as_nanos().min(u64::MAX as u128) as u64);
             } else {
-                (self.editor)(ctx, self.host.as_mut());
+                rvst_ui::editor_frame(ctx, &mut self.host, self.editor);
             }
         }
     }
@@ -128,27 +140,15 @@ mod native {
                 return Err("invalid editor size or scale".into());
             }
             let mut settings = EguiWindowSettings::new()
-                .with_title(options.title)
+                .with_title(options.title.clone())
                 .with_size(baseview::dpi::LogicalSize::new(
                     options.width as f64,
                     options.height as f64,
                 ))
                 .with_zoom_factor(options.scale);
             settings.parent = parent;
-            let window = EguiWindow::create(
-                settings,
-                App {
-                    host,
-                    editor,
-                    inspector_url: options.inspector_url,
-                    meters: options.meters,
-                    ui_metrics: options.ui_metrics,
-                    deadline: options
-                        .close_after
-                        .map(|duration| std::time::Instant::now() + duration),
-                },
-            )
-            .map_err(|e| Error(e.to_string()))?;
+            let window = EguiWindow::create(settings, App::new(host, editor, options))
+                .map_err(|e| Error(e.to_string()))?;
             Ok(Self {
                 window: Some(window),
             })
@@ -201,16 +201,44 @@ mod native {
     #[cfg(test)]
     mod tests {
         use super::*;
-        struct Host;
+        static DESCRIPTOR: rvst_core::PluginDescriptor = rvst_core::PluginDescriptor {
+            id: "test",
+            name: "Test",
+            vendor: "RVST",
+            version: "1",
+            url: "",
+            email: "",
+            vst3_id: [1; 16],
+            kind: rvst_core::PluginKind::Effect,
+            parameters: &[rvst_core::ParameterSpec {
+                id: 1,
+                name: "Gain",
+                unit: "",
+                min: 0.0,
+                max: 1.0,
+                default: 0.0,
+                step: None,
+                bypass: false,
+            }],
+            inputs: &[],
+            outputs: &[],
+            midi_input: false,
+            midi_output: false,
+            supports_f64: false,
+        };
+        #[derive(Default)]
+        struct Host(f64);
         impl EditorHost for Host {
             fn descriptor(&self) -> &'static rvst_core::PluginDescriptor {
-                unreachable!()
+                &DESCRIPTOR
             }
-            fn parameter(&self, _: u32) -> Option<f64> {
-                None
+            fn parameter(&self, id: u32) -> Option<f64> {
+                (id == 1).then_some(self.0)
             }
             fn begin_edit(&mut self, _: u32) {}
-            fn set_parameter(&mut self, _: u32, _: f64) {}
+            fn set_parameter(&mut self, _: u32, value: f64) {
+                self.0 = value;
+            }
             fn end_edit(&mut self, _: u32) {}
             fn save_state(&mut self) -> Result<Vec<u8>, Error> {
                 Ok(Vec::new())
@@ -223,7 +251,9 @@ mod native {
         fn native_editor_reports_only_enabled_ui_timing() {
             let metrics = std::sync::Arc::new(rvst_runtime::Metrics::default());
             let mut app = App {
-                host: Box::new(Host),
+                host: rvst_core::HistoryHost::new(
+                    Box::new(Host::default()) as Box<dyn EditorHost + Send>
+                ),
                 editor: |ctx, _| {
                     ctx.layer_painter(egui::LayerId::background()).rect_filled(
                         egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(100., 100.)),
@@ -247,6 +277,37 @@ mod native {
             output.textures_delta.clear();
             assert!(!output.shapes.is_empty());
             assert_eq!(metrics.snapshot().ui_frames, 1);
+        }
+        #[test]
+        fn native_runner_installs_history_and_keyboard_for_custom_editors() {
+            let mut app = App::new(
+                Box::new(Host::default()),
+                |_, _| {},
+                EditorOptions::default(),
+            );
+            app.host.begin_edit(1);
+            app.host.set_parameter(1, 0.8);
+            app.host.end_edit(1);
+            assert!(app.host.undo_label().is_some());
+            let ctx = egui::Context::default();
+            let input = egui::RawInput {
+                events: vec![egui::Event::Key {
+                    key: egui::Key::Z,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers {
+                        ctrl: true,
+                        command: true,
+                        ..Default::default()
+                    },
+                }],
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| app.draw_editor(ui.ctx()));
+            output.textures_delta.clear();
+            assert_eq!(app.host.parameter(1), Some(0.0));
+            assert!(app.host.redo_label().is_some());
         }
     }
 }

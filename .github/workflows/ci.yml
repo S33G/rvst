@@ -9,6 +9,7 @@ jobs:
         env:
           PYTHONDONTWRITEBYTECODE: "1"
       - run: python3 scripts/check-docs.py
+      - run: python3 scripts/check-docs.py skills
   native:
     strategy:
       matrix:

@@ -12,7 +12,7 @@ or a browser through WebAssembly. Every plugin gets its own repository.
 deterministic simulated host; audio processing runs natively.*
 
 [Get started](docs/getting-started.md) · [Documentation](docs/README.md) ·
-[CLI reference](docs/cli.md) · [Contributing](CONTRIBUTING.md)
+[CLI reference](docs/cli.md) · [Agent skills](docs/agent-skills.md) · [Contributing](CONTRIBUTING.md)
 
 > **Development preview:** the SDK and CLI are not published on crates.io yet.
 > Use the source workflow below. Native validators and Chrome checks pass on
@@ -27,7 +27,7 @@ runners and project tooling around them.
 | Build your plugin | RVST provides |
 | --- | --- |
 | Effects, instruments and MIDI tools | Direct VST3/CLAP adapters, audio buses, sidechains, f32/f64 processing and sample-offset events |
-| Automatable controls | Stable parameter identities, ranges, smoothing, gestures and versioned processing state |
+| Automatable controls | Stable parameter identities, ranges, smoothing, gestures, built-in undo/redo and versioned processing state |
 | An editor that feels like your product | Shared egui components, theme packs, fonts, artwork, scaling and keyboard controls |
 | A fast development loop | Native standalone runner and WASM preview of the same Rust UI |
 | Visibility into a running instance | Structured plugin logs, live parameter inspection, callback timing and queue/drop counters |

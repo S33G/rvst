@@ -1121,7 +1121,7 @@ impl<D: Definition> Export<D> {
             };
             let rt = &mut *i.runtime.get();
             rt.retired_errors.collect_on_control_thread();
-            let Ok(bytes) = rt.plugin.save_state() else {
+            let Ok(bytes) = rvst_adapter::save_project_state(&mut *rt.plugin, &rt.mirror) else {
                 return false;
             };
             drop(_access);
@@ -1167,19 +1167,18 @@ impl<D: Definition> Export<D> {
             };
             let rt = &mut *i.runtime.get();
             rt.retired_errors.collect_on_control_thread();
-            let ok = rt.plugin.load_state(bytes).is_ok();
-            rt.publish();
+            if rvst_adapter::load_project_state(&mut *rt.plugin, &rt.mirror, None, bytes).is_err() {
+                return false;
+            }
             rt.debug_lifecycle("Native state loaded");
             drop(_access);
-            if ok {
-                let params = i.host_params.load(Ordering::Acquire);
-                if !params.is_null()
-                    && let Some(rescan) = (*params).rescan
-                {
-                    rescan(i._host, CLAP_PARAM_RESCAN_VALUES | CLAP_PARAM_RESCAN_TEXT);
-                }
+            let params = i.host_params.load(Ordering::Acquire);
+            if !params.is_null()
+                && let Some(rescan) = (*params).rescan
+            {
+                rescan(i._host, CLAP_PARAM_RESCAN_VALUES | CLAP_PARAM_RESCAN_TEXT);
             }
-            ok
+            true
         })
     }
 }
@@ -1595,6 +1594,9 @@ impl ClapEditor {
     }
 }
 impl EditorHost for ClapEditor {
+    fn edit_history(&self) -> Option<EditHistory> {
+        Some(self.mirror.edit_history.clone())
+    }
     fn editor_context(&self) -> Option<EditorContext> {
         self.mirror.editor_context.clone()
     }
@@ -1812,12 +1814,181 @@ mod tests {
         b.extend_from_slice(std::slice::from_raw_parts(p as *const u8, n));
         n as i64
     }
-    unsafe extern "C" fn read(s: *const clap_istream, p: *mut c_void, n: u64) -> i64 {
+    pub(super) unsafe extern "C" fn read(s: *const clap_istream, p: *mut c_void, n: u64) -> i64 {
         let state = &mut *((*s).ctx as *mut (Vec<u8>, usize));
         let n = (n as usize).min(3).min(state.0.len() - state.1);
         ptr::copy_nonoverlapping(state.0.as_ptr().add(state.1), p as *mut u8, n);
         state.1 += n;
         n as i64
+    }
+    #[test]
+    fn native_restore_invalidates_shared_history_only_on_success() {
+        unsafe {
+            let (p, _host) = make();
+            let i = Export::<Def>::instance(p);
+            let mut editor = rvst_core::HistoryHost::new(ClapEditor {
+                mirror: i.mirror.clone(),
+                host: 0,
+                params: 0,
+            });
+            editor.begin_edit(42);
+            editor.set_parameter(42, 0.25);
+            editor.end_edit(42);
+            assert!(editor.undo_label().is_some());
+            let mut invalid = (vec![0u8], 0usize);
+            let input = clap_istream {
+                ctx: &mut invalid as *mut _ as _,
+                read: Some(read),
+            };
+            assert!(!Export::<Def>::load(p, &input));
+            assert!(editor.undo_label().is_some());
+            assert_eq!(i.mirror.get(42), Some(0.25));
+
+            let mut saved = (0.75f64.to_le_bytes().to_vec(), 0usize);
+            let input = clap_istream {
+                ctx: &mut saved as *mut _ as _,
+                read: Some(read),
+            };
+            assert!(Export::<Def>::load(p, &input));
+            assert!(editor.undo_label().is_none());
+            assert_eq!(i.mirror.get(42), Some(0.75));
+            let rt = &mut *i.runtime.get();
+            apply_ui(rt, ptr::null());
+            assert_eq!(rt.plugin.parameter(42), Some(0.75));
+            drop(editor);
+            let reopened = rvst_core::HistoryHost::new(ClapEditor {
+                mirror: i.mirror.clone(),
+                host: 0,
+                params: 0,
+            });
+            assert!(reopened.undo_label().is_none());
+            drop(reopened);
+            (*p).destroy.unwrap()(p);
+        }
+    }
+    #[test]
+    fn project_state_roundtrip_preserves_undo_redo_and_rejects_corrupt_history() {
+        unsafe {
+            let (p, _host) = make();
+            let i = Export::<Def>::instance(p);
+            let mut editor = rvst_core::HistoryHost::new(ClapEditor {
+                mirror: i.mirror.clone(),
+                host: 0,
+                params: 0,
+            });
+            for value in [0.25, 0.5] {
+                editor.begin_edit(42);
+                editor.set_parameter(42, value);
+                editor.end_edit(42);
+            }
+            assert!(editor.undo().unwrap());
+            let mut saved = Vec::<u8>::new();
+            let output = clap_ostream {
+                ctx: &mut saved as *mut _ as _,
+                write: Some(write),
+            };
+            assert!(Export::<Def>::save(p, &output));
+            let decoded =
+                rvst_adapter::decode_native_state(fixture::Gain::descriptor(), &saved).unwrap();
+            assert_eq!(decoded.plugin_state, 0.25f64.to_le_bytes());
+            assert!(decoded.history.is_some());
+            let invalid_plugin = rvst_adapter::encode_native_state(
+                fixture::Gain::descriptor(),
+                b"invalid plugin state",
+                decoded.history.unwrap(),
+            )
+            .unwrap();
+            let invalid_history = rvst_adapter::encode_native_state(
+                fixture::Gain::descriptor(),
+                &1.75f64.to_le_bytes(),
+                b"corrupt history",
+            )
+            .unwrap();
+            editor.set_parameter(42, 1.5);
+            let mut invalid = (invalid_history, 0usize);
+            let input = clap_istream {
+                ctx: &mut invalid as *mut _ as _,
+                read: Some(read),
+            };
+            assert!(!Export::<Def>::load(p, &input));
+            assert_eq!(i.mirror.get(42), Some(1.5));
+            assert_eq!((&*i.runtime.get()).plugin.parameter(42), Some(0.25));
+            assert!(editor.undo_label().is_some());
+            let mut invalid = (invalid_plugin, 0usize);
+            let input = clap_istream {
+                ctx: &mut invalid as *mut _ as _,
+                read: Some(read),
+            };
+            assert!(!Export::<Def>::load(p, &input));
+            assert_eq!(i.mirror.get(42), Some(1.5));
+            assert!(editor.redo_label().is_none());
+
+            let mut state = (saved, 0usize);
+            let input = clap_istream {
+                ctx: &mut state as *mut _ as _,
+                read: Some(read),
+            };
+            assert!(Export::<Def>::load(p, &input));
+            assert_eq!(i.mirror.get(42), Some(0.25));
+            assert!(editor.undo_label().is_some());
+            assert!(editor.redo_label().is_some());
+            assert!(editor.redo().unwrap());
+            assert_eq!(i.mirror.get(42), Some(0.5));
+            assert!(editor.undo().unwrap());
+            assert!(editor.undo().unwrap());
+            assert_eq!(i.mirror.get(42), Some(1.));
+            assert!(!editor.undo().unwrap());
+            drop(editor);
+            (*p).destroy.unwrap()(p);
+        }
+    }
+    #[test]
+    fn autosave_midgesture_restores_partial_drag_as_one_undo_in_a_new_instance() {
+        unsafe {
+            let (source, _source_host) = make();
+            let source_instance = Export::<Def>::instance(source);
+            let mut editor = rvst_core::HistoryHost::new(ClapEditor {
+                mirror: source_instance.mirror.clone(),
+                host: 0,
+                params: 0,
+            });
+            editor.begin_edit(42);
+            editor.set_parameter(42, 0.25);
+            editor.set_parameter(42, 0.4);
+            let mut saved = Vec::<u8>::new();
+            let output = clap_ostream {
+                ctx: &mut saved as *mut _ as _,
+                write: Some(write),
+            };
+            assert!(Export::<Def>::save(source, &output));
+            // Saving must leave the pending value available for host notification.
+            assert_eq!(source_instance.mirror.take_edit(0), Some((42, 0.4)));
+            editor.end_edit(42);
+            drop(editor);
+            (*source).destroy.unwrap()(source);
+
+            let (restored, _restored_host) = make();
+            let restored_instance = Export::<Def>::instance(restored);
+            let mut state = (saved, 0usize);
+            let input = clap_istream {
+                ctx: &mut state as *mut _ as _,
+                read: Some(read),
+            };
+            assert!(Export::<Def>::load(restored, &input));
+            let mut reopened = rvst_core::HistoryHost::new(ClapEditor {
+                mirror: restored_instance.mirror.clone(),
+                host: 0,
+                params: 0,
+            });
+            assert_eq!(reopened.parameter(42), Some(0.4));
+            assert!(reopened.undo().unwrap());
+            assert_eq!(reopened.parameter(42), Some(1.));
+            assert!(!reopened.undo().unwrap());
+            assert!(reopened.redo().unwrap());
+            assert_eq!(reopened.parameter(42), Some(0.4));
+            drop(reopened);
+            (*restored).destroy.unwrap()(restored);
+        }
     }
     #[test]
     fn active_state_roundtrip_short_stream_reads_and_nonblocking_suspension() {
@@ -1832,7 +2003,10 @@ mod tests {
                 write: Some(write),
             };
             assert!(Export::<Def>::save(p, &out));
-            assert_eq!(saved, 1f64.to_le_bytes());
+            let decoded =
+                rvst_adapter::decode_native_state(fixture::Gain::descriptor(), &saved).unwrap();
+            assert_eq!(decoded.plugin_state, 1f64.to_le_bytes());
+            assert!(decoded.history.is_some());
             let mut state = (0.5f64.to_le_bytes().to_vec(), 0usize);
             let input = clap_istream {
                 ctx: &mut state as *mut _ as _,
@@ -2080,8 +2254,27 @@ mod compatibility_tests {
                 write: Some(write),
             };
             assert!(Export::<Def>::save(p, &stream));
-            assert_eq!(&bytes[..8], &8u64.to_le_bytes());
-            assert_eq!(&bytes[8..], &0.5f64.to_le_bytes());
+            assert_eq!(&bytes[..8], &((bytes.len() - 8) as u64).to_le_bytes());
+            let decoded =
+                rvst_adapter::decode_native_state(Legacy::descriptor(), &bytes[8..]).unwrap();
+            assert_eq!(decoded.plugin_state, 0.5f64.to_le_bytes());
+            assert!(decoded.history.is_some());
+            // Existing prefixed raw projects and new prefixed envelopes both load.
+            let legacy = compat::encode_state::<Legacy>(0.75f64.to_le_bytes().to_vec());
+            for (data, expected) in [(legacy, 0.75), (bytes, 0.5)] {
+                let mut state = (data, 0usize);
+                let input = clap_istream {
+                    ctx: &mut state as *mut _ as _,
+                    read: Some(super::tests::read),
+                };
+                assert!(Export::<Def>::load(p, &input));
+                assert_eq!(
+                    (&*Export::<Def>::instance(p).runtime.get())
+                        .plugin
+                        .parameter(42),
+                    Some(expected)
+                );
+            }
             let configs = Export::<Def>::extension(p, CLAP_EXT_AUDIO_PORTS_CONFIG.as_ptr())
                 as *const clap_plugin_audio_ports_config;
             assert!(!configs.is_null());

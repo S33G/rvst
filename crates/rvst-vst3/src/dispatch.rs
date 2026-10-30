@@ -11,17 +11,20 @@ use vst3::{ComPtr, Steinberg::Linux::*};
 struct Pending {
     touched: bool,
     active: bool,
-    value: Option<f64>,
+    value: Option<(u64, u64, f64)>,
 }
 pub(super) struct Mailbox {
     slots: Mutex<Vec<Pending>>,
     ids: Vec<u32>,
+    mirror: Arc<rvst_adapter::ParameterMirror>,
 }
 impl Mailbox {
-    pub fn new(d: &rvst_core::PluginDescriptor) -> Arc<Self> {
+    pub fn new(mirror: Arc<rvst_adapter::ParameterMirror>) -> Arc<Self> {
+        let d = mirror.descriptor;
         Arc::new(Self {
             slots: Mutex::new(vec![Pending::default(); d.parameters.len()]),
             ids: d.parameters.iter().map(|p| p.id).collect(),
+            mirror,
         })
     }
     fn change(&self, id: u32, f: impl FnOnce(&mut Pending)) {
@@ -34,8 +37,12 @@ impl Mailbox {
     pub fn begin(&self, id: u32) {
         self.change(id, |p| p.active = true);
     }
+    pub fn value_at_generation(&self, id: u32, value: f64, generation: u64, token: u64) {
+        self.change(id, |p| p.value = Some((generation, token, value)));
+    }
+    #[cfg(test)]
     pub fn value(&self, id: u32, value: f64) {
-        self.change(id, |p| p.value = Some(value));
+        self.value_at_generation(id, value, self.mirror.state_generation(), 0);
     }
     pub fn end(&self, id: u32) {
         self.change(id, |p| p.active = false);
@@ -65,8 +72,10 @@ impl Mailbox {
                 emit(id, Action::Begin);
                 active[i] = true;
             }
-            if let Some(value) = p.value {
-                emit(id, Action::Value(value));
+            if let Some((generation, token, value)) = p.value
+                && generation == self.mirror.state_generation()
+            {
+                emit(id, Action::Value(generation, token, value));
             }
             if !p.active {
                 emit(id, Action::End);
@@ -78,7 +87,7 @@ impl Mailbox {
 #[derive(Debug, PartialEq)]
 enum Action {
     Begin,
-    Value(f64),
+    Value(u64, u64, f64),
     End,
 }
 struct State {
@@ -130,8 +139,13 @@ impl State {
                     Action::Begin => {
                         handler.beginEdit(id);
                     }
-                    Action::Value(value) => {
-                        handler.performEdit(id, value);
+                    Action::Value(generation, token, value) => {
+                        // beginEdit may synchronously restore state. Check again
+                        // after host callbacks, without holding the mailbox lock.
+                        if generation == self.mailbox.mirror.state_generation() {
+                            self.mailbox.mirror.host_edit_dispatched(id, token);
+                            handler.performEdit(id, value);
+                        }
                     }
                     Action::End => {
                         handler.endEdit(id);
@@ -168,10 +182,10 @@ impl Dispatch {
     pub unsafe fn new(
         frame: *mut IPlugFrame,
         handler: Handler,
-        d: &rvst_core::PluginDescriptor,
+        mirror: Arc<rvst_adapter::ParameterMirror>,
     ) -> Option<Self> {
         let run_loop = ComRef::from_raw(frame)?.cast::<IRunLoop>()?;
-        let mailbox = Mailbox::new(d);
+        let mailbox = Mailbox::new(mirror);
         let timer = ComWrapper::new(Timer {
             state: State::new(mailbox.clone(), handler),
         })
@@ -204,8 +218,45 @@ impl Drop for Dispatch {
 mod tests {
     use super::*;
     #[test]
+    fn restored_state_discards_queued_values_but_preserves_balanced_gestures() {
+        let mirror =
+            rvst_adapter::ParameterMirror::new(super::super::tests::fixture::Gain::descriptor());
+        let q = Mailbox::new(mirror.clone());
+        let before_restore = mirror.state_generation();
+        let mut active = [false];
+        let mut events = Vec::new();
+        q.begin(42);
+        q.value(42, 0.25);
+        q.drain(&mut active, |id, action| events.push((id, action)));
+        events.clear();
+        q.value(42, 0.5);
+        mirror.state_restored();
+        // Include a UI producer that was suspended before the restore.
+        q.value_at_generation(42, 0.6, before_restore, 0);
+        q.end(42);
+        q.drain(&mut active, |id, action| events.push((id, action)));
+        assert_eq!(events, vec![(42, Action::End)]);
+        assert!(!active[0]);
+
+        events.clear();
+        q.begin(42);
+        q.value(42, 0.75);
+        q.end(42);
+        q.drain(&mut active, |id, action| events.push((id, action)));
+        assert_eq!(
+            events,
+            vec![
+                (42, Action::Begin),
+                (42, Action::Value(mirror.state_generation(), 0, 0.75)),
+                (42, Action::End),
+            ]
+        );
+    }
+    #[test]
     fn coalescing_saturation_and_shutdown_keep_edits_balanced() {
-        let q = Mailbox::new(super::super::tests::fixture::Gain::descriptor());
+        let q = Mailbox::new(rvst_adapter::ParameterMirror::new(
+            super::super::tests::fixture::Gain::descriptor(),
+        ));
         let mut active = [false];
         let mut events = Vec::new();
         for i in 0..10000 {
@@ -218,7 +269,7 @@ mod tests {
             events,
             vec![
                 (42, Action::Begin),
-                (42, Action::Value(9999.)),
+                (42, Action::Value(1, 0, 9999.)),
                 (42, Action::End)
             ]
         );
@@ -232,7 +283,7 @@ mod tests {
             events,
             vec![
                 (42, Action::Begin),
-                (42, Action::Value(0.5)),
+                (42, Action::Value(1, 0, 0.5)),
                 (42, Action::End)
             ]
         );
@@ -249,6 +300,7 @@ mod reentrant_tests {
         mailbox: Arc<Mailbox>,
         timer: Rc<Cell<*mut ITimerHandler>>,
         close: Cell<bool>,
+        restore: Cell<bool>,
     }
     impl Class for Host {
         type Interfaces = (IComponentHandler,);
@@ -256,6 +308,9 @@ mod reentrant_tests {
     impl IComponentHandlerTrait for Host {
         unsafe fn beginEdit(&self, _: u32) -> tresult {
             self.actions.borrow_mut().push(Action::Begin);
+            if self.restore.replace(false) {
+                self.mailbox.mirror.state_restored();
+            }
             if self.close.replace(false) {
                 self.mailbox.close();
                 ComRef::from_raw(self.timer.get()).unwrap().onTimer();
@@ -263,7 +318,7 @@ mod reentrant_tests {
             kResultOk
         }
         unsafe fn performEdit(&self, _: u32, v: f64) -> tresult {
-            self.actions.borrow_mut().push(Action::Value(v));
+            self.actions.borrow_mut().push(Action::Value(1, 0, v));
             kResultOk
         }
         unsafe fn endEdit(&self, _: u32) -> tresult {
@@ -277,7 +332,9 @@ mod reentrant_tests {
     #[test]
     fn callback_can_close_gesture_reentrantly_without_delaying_end() {
         unsafe {
-            let mailbox = Mailbox::new(super::super::tests::fixture::Gain::descriptor());
+            let mailbox = Mailbox::new(rvst_adapter::ParameterMirror::new(
+                super::super::tests::fixture::Gain::descriptor(),
+            ));
             let actions = Rc::new(RefCell::new(Vec::new()));
             let slot = Rc::new(Cell::new(ptr::null_mut()));
             let host = ComWrapper::new(Host {
@@ -285,6 +342,7 @@ mod reentrant_tests {
                 mailbox: mailbox.clone(),
                 timer: slot.clone(),
                 close: Cell::new(true),
+                restore: Cell::new(false),
             })
             .to_com_ptr::<IComponentHandler>()
             .unwrap();
@@ -300,8 +358,33 @@ mod reentrant_tests {
             timer.onTimer();
             assert_eq!(
                 *actions.borrow(),
-                vec![Action::Begin, Action::Value(0.5), Action::End]
+                vec![Action::Begin, Action::Value(1, 0, 0.5), Action::End]
             );
+        }
+    }
+    #[test]
+    fn restore_inside_begin_edit_discards_already_drained_value() {
+        unsafe {
+            let mailbox = Mailbox::new(rvst_adapter::ParameterMirror::new(
+                super::super::tests::fixture::Gain::descriptor(),
+            ));
+            let actions = Rc::new(RefCell::new(Vec::new()));
+            let host = ComWrapper::new(Host {
+                actions: actions.clone(),
+                mailbox: mailbox.clone(),
+                timer: Rc::new(Cell::new(ptr::null_mut())),
+                close: Cell::new(false),
+                restore: Cell::new(true),
+            })
+            .to_com_ptr::<IComponentHandler>()
+            .unwrap();
+            retain(host.as_ptr() as _);
+            let state = State::new(mailbox.clone(), Handler(host.as_ptr()));
+            mailbox.begin(42);
+            mailbox.value(42, 0.5);
+            mailbox.end(42);
+            state.run();
+            assert_eq!(*actions.borrow(), vec![Action::Begin, Action::End]);
         }
     }
 }
@@ -336,7 +419,7 @@ mod lifetime_tests {
             kResultOk
         }
         unsafe fn performEdit(&self, _: u32, v: f64) -> tresult {
-            self.actions.borrow_mut().push(Action::Value(v));
+            self.actions.borrow_mut().push(Action::Value(1, 0, v));
             kResultOk
         }
         unsafe fn endEdit(&self, _: u32) -> tresult {
@@ -350,7 +433,9 @@ mod lifetime_tests {
     #[test]
     fn callback_survives_final_timer_release_and_closes_its_host_gesture() {
         unsafe {
-            let mailbox = Mailbox::new(super::super::tests::fixture::Gain::descriptor());
+            let mailbox = Mailbox::new(rvst_adapter::ParameterMirror::new(
+                super::super::tests::fixture::Gain::descriptor(),
+            ));
             let actions = Rc::new(RefCell::new(Vec::new()));
             let timer = Rc::new(RefCell::new(None));
             let destroyed = Rc::new(Cell::new(false));
@@ -378,7 +463,7 @@ mod lifetime_tests {
             assert!(destroyed.get());
             assert_eq!(
                 *actions.borrow(),
-                vec![Action::Begin, Action::Value(0.75), Action::End]
+                vec![Action::Begin, Action::Value(1, 0, 0.75), Action::End]
             );
         }
     }

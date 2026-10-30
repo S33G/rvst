@@ -3,6 +3,8 @@ pub use egui;
 use rvst_core::{EditorHost, Error, ParameterSpec};
 use serde::Deserialize;
 pub type EditorFn = fn(&egui::Context, &mut dyn EditorHost);
+mod history;
+pub use history::{editor_frame, history_controls};
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
@@ -510,6 +512,7 @@ pub fn default_editor(ctx: &egui::Context, host: &mut dyn EditorHost) {
             host.descriptor().vendor,
             host.descriptor().version
         ));
+        history_controls(ui, host);
         if let Some(url) = ctx.data(|d| d.get_temp::<String>(egui::Id::new("rvst-inspector-url"))) {
             ui.horizontal_wrapped(|ui| {
                 ui.hyperlink_to("Open native inspector in browser", &url);
@@ -530,11 +533,13 @@ pub fn default_editor(ctx: &egui::Context, host: &mut dyn EditorHost) {
             ui.separator();
             ui.horizontal_wrapped(|ui| {
                 if ui.button("Reset parameters").clicked() {
+                    host.begin_edit_group("Reset parameters");
                     for spec in host.descriptor().parameters {
                         host.begin_edit(spec.id);
                         host.set_parameter(spec.id, spec.default);
                         host.end_edit(spec.id);
                     }
+                    host.end_edit_group();
                 }
                 if ui.button("Store parameter preset").clicked() {
                     match host.save_state() {
@@ -870,6 +875,7 @@ pub fn showcase_editor_with(
     );
     egui::CentralPanel::default().show(&mut root,|ui|{
         ui.horizontal(|ui|{header_logo(ui,state.theme);ui.heading("RVST / playground");ui.label(host.descriptor().version);});
+        history_controls(ui, host);
         ui.label("Turn a control. Hear the result. Inspect the engine.");
         ui.small(ctx.data(|d|d.get_temp::<String>(egui::Id::new("rvst-runtime-label"))).unwrap_or_else(||"Plugin host".into()));
         ui.add_space(12.0);
@@ -889,7 +895,7 @@ pub fn showcase_editor_with(
                 ui.horizontal_wrapped(|ui|{
                     if ui.button("Store parameter preset").clicked(){match host.save_state(){Ok(v)=>{state.preset=Some(v);state.notice="Preset stored for this session. Change a knob, then recall it.".into()},Err(e)=>state.notice=e.to_string()}}
                     if ui.add_enabled(state.preset.is_some(),egui::Button::new("Recall parameter preset")).clicked(){state.notice=match host.load_state(state.preset.as_ref().unwrap()){Ok(())=>{state.events.push("Preset recalled".into());"Preset recalled".into()},Err(e)=>e.to_string()};}
-                    if ui.button("Reset all knobs").clicked(){for p in host.descriptor().parameters{host.begin_edit(p.id);host.set_parameter(p.id,p.default);host.end_edit(p.id);}state.events.push("Parameters reset".into());}
+                    if ui.button("Reset all knobs").clicked(){host.begin_edit_group("Reset parameters");for p in host.descriptor().parameters{host.begin_edit(p.id);host.set_parameter(p.id,p.default);host.end_edit(p.id);}host.end_edit_group();state.events.push("Parameters reset".into());}
                 });
                 ui.label(&state.notice);
             },

@@ -348,6 +348,9 @@ struct StandaloneEditor {
     context: Option<EditorContext>,
 }
 impl EditorHost for StandaloneEditor {
+    fn edit_history(&self) -> Option<EditHistory> {
+        self.inner.edit_history()
+    }
     fn descriptor(&self) -> &'static PluginDescriptor {
         self.inner.descriptor()
     }
@@ -380,6 +383,7 @@ pub fn run<P: Plugin>(editor: EditorFn) -> Result<(), Error> {
         StandaloneOptions::from_args(std::env::args().skip(1))?,
     )
 }
+
 pub fn run_with_options<P: Plugin>(
     editor: EditorFn,
     options: StandaloneOptions,
@@ -488,4 +492,30 @@ pub fn run_with_options<P: Plugin>(
         return Err("audio stream or processor reported errors".into());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod history_tests {
+    use super::*;
+    mod fixture {
+        include!("../../rvst-adapter/test-support/plugin.rs");
+    }
+
+    #[test]
+    fn reopened_standalone_editor_uses_instance_history() {
+        let mirror = ParameterMirror::new(fixture::Gain::descriptor());
+        let mut editor = HistoryHost::new(StandaloneEditor {
+            inner: MirrorEditor(mirror.clone()),
+            context: None,
+        });
+        editor.begin_edit(42);
+        editor.set_parameter(42, 0.5);
+        editor.end_edit(42);
+        drop(editor);
+        let reopened = HistoryHost::new(StandaloneEditor {
+            inner: MirrorEditor(mirror),
+            context: None,
+        });
+        assert!(reopened.undo_label().is_some());
+    }
 }
