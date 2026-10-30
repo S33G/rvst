@@ -1,5 +1,7 @@
 # RVST implementation ledger
 
+[Documentation](README.md) / RVST implementation ledger
+
 RVST 0.1.0 is a development preview using Rust 2024 and the pinned Rust 1.98
 toolchain. The implemented scope is a Rust-owned VST3/CLAP framework, shared
 native/WASM egui editors, a standalone runner, and one operations layer for the

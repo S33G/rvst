@@ -1,7 +1,13 @@
 # CLI, templates, and studio status
 
+[Documentation](README.md) / CLI, templates, and studio status
+
+For commands and keyboard shortcuts, use the [CLI and TUI reference](cli.md).
+
 Implemented in `cargo-rvst` and shared `rvst-ops`. Installation is
 `cargo install --path crates/cargo-rvst --locked`; invocation is `cargo rvst`.
+
+## Implemented capabilities
 
 - CLI: new, templates list/inspect/add/check, doctor, dev (native/web), test,
   validate, debug, inspect, replay/step, package, schema, studio, showcase.
@@ -29,6 +35,8 @@ Implemented in `cargo-rvst` and shared `rvst-ops`. Installation is
   Showcase reuses only owned Debug projects, builds/optionally installs,
   avoids duplicate live instances, and reaps a foreground runner on Ctrl-C.
 
+## Coverage and boundaries
+
 Automated coverage: CLI and operations tests cover all parser
 forms, real local pinned Git registration, all embedded template rendering,
 unknown/invalid inputs, traversal and symlink rejection, atomic failure cleanup,
@@ -39,7 +47,7 @@ creation through shared operations. Tests use real child processes and local
 Git repositories. No network template fixture is required.
 
 Generated-project, clone and installation checks are separate from parser and
-operation tests. Final Debug artifact acceptance is recorded only after the
-corresponding generated build and host/browser checks finish. CLI tests do not
+operation tests. Current Debug artifact and browser checks are recorded in the
+[integration verification report](validation-2026-10-30.md). CLI tests do not
 imply Windows/Linux GUI acceptance or DAW validation. See [implementation
 status](implementation.md) and [native adapter status](native-status.md).

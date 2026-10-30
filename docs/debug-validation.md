@@ -1,5 +1,7 @@
 # RVST Debug native validation — 2026-10-30
 
+[Documentation](README.md) / RVST Debug native validation — 2026-10-30
+
 The permanent `../rvst-debug` project was generated with a vendored SDK and its
 installed development bundles were tested on **macOS 26.7.1 (25G241), arm64**.
 The final validator rerun covers the rebuilt bundles after the keyboard-gesture

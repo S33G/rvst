@@ -1,5 +1,7 @@
 # Release and compatibility qualification
 
+[Documentation](README.md) / Release and compatibility qualification
+
 1. Build from a clean commit and locked dependencies. Record rustc, Cargo,
    operating system, architecture, format, plugin category and exact host version.
 2. Run `cargo fmt --all --check`, workspace tests, Clippy and generated-project

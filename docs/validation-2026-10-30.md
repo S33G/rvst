@@ -1,5 +1,7 @@
 # Integration verification — 30 October 2026
 
+[Documentation](README.md) / Integration verification — 30 October 2026
+
 These checks ran on macOS 26.7.1, Apple Silicon, with Rust 1.98.0. They describe
 a development preview, not a qualified cross-platform release. The initial
 October commit dates are reconstructed as explained in [HISTORY.md](../HISTORY.md);
