@@ -427,3 +427,154 @@ fn inspect_json_contains_live_state_and_metrics_without_capability() {
         .unwrap();
     assert_eq!(missing.status.code(), Some(2));
 }
+
+#[cfg(unix)]
+fn doctor_with_failed_rustc(format: &str) -> std::process::Output {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = tempfile::tempdir().unwrap();
+    let rustc = temp.path().join("rustc");
+    std::fs::write(
+        &rustc,
+        "#!/bin/sh\nprintf 'toolchain unavailable for this project\\n' >&2\nexit 1\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&rustc, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::process::Command::new(env!("CARGO_BIN_EXE_cargo-rvst"))
+        .env("PATH", temp.path())
+        .args(["doctor", "--format", format, "--project"])
+        .arg(temp.path())
+        .output()
+        .unwrap()
+}
+
+#[cfg(unix)]
+#[test]
+fn doctor_human_failure_identifies_tools_and_remedies() {
+    let output = doctor_with_failed_rustc("human");
+    assert_eq!(output.status.code(), Some(3));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("rustc"), "{stderr}");
+    assert!(
+        stderr.contains("toolchain unavailable for this project"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("rustup component add rustfmt"), "{stderr}");
+}
+
+#[cfg(unix)]
+#[test]
+fn doctor_machine_failure_preserves_tool_stderr_and_envelope() {
+    for format in ["json", "jsonl"] {
+        let output = doctor_with_failed_rustc(format);
+        assert_eq!(output.status.code(), Some(3));
+        assert!(output.stderr.is_empty());
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["schema_version"], 1);
+        assert_eq!(value["event"], "error");
+        assert_eq!(value["error"]["code"], "doctor_failed");
+        let rustc = value["error"]["details"]["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|check| check["name"] == "rustc")
+            .unwrap();
+        assert_eq!(rustc["ok"], false);
+        assert_eq!(rustc["detail"], "toolchain unavailable for this project");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn doctor_checks_wasm_target_in_selected_project() {
+    use std::os::unix::fs::PermissionsExt;
+
+    for (caller_has_wasm, project_has_wasm) in [(true, false), (false, true)] {
+        let temp = tempfile::tempdir().unwrap();
+        let caller = temp.path().join("caller");
+        let project = temp.path().join("project");
+        let bin = temp.path().join("bin");
+        for path in [&caller, &project, &bin] {
+            std::fs::create_dir(path).unwrap();
+        }
+        for (path, has_wasm) in [(&caller, caller_has_wasm), (&project, project_has_wasm)] {
+            if has_wasm {
+                std::fs::write(path.join("wasm-installed"), "").unwrap();
+            }
+        }
+        for name in ["rustc", "cargo", "rustfmt", "git", "rustup", "wasm-bindgen"] {
+            let program = bin.join(name);
+            let script = if name == "rustup" {
+                "#!/bin/sh\nif [ \"$1\" = target ]; then\n  if [ -f wasm-installed ]; then printf 'wasm32-unknown-unknown\\n'; fi\nelse\n  printf 'test-tool 1.0\\n'\nfi\n"
+            } else {
+                "#!/bin/sh\nprintf 'test-tool 1.0\\n'\n"
+            };
+            std::fs::write(&program, script).unwrap();
+            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_cargo-rvst"))
+            .env("PATH", &bin)
+            .current_dir(&caller)
+            .args(["doctor", "--format", "json", "--project"])
+            .arg(&project)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert!(output.stderr.is_empty());
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let wasm = value["data"]["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|check| check["name"] == "wasm32-unknown-unknown")
+            .unwrap();
+        assert_eq!(wasm["ok"], project_has_wasm);
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn doctor_machine_output_captures_optional_library_probe_diagnostics() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = tempfile::tempdir().unwrap();
+    for name in [
+        "rustc",
+        "cargo",
+        "rustfmt",
+        "git",
+        "rustup",
+        "wasm-bindgen",
+        "pkg-config",
+    ] {
+        let program = temp.path().join(name);
+        let script = if name == "pkg-config" {
+            "#!/bin/sh\nprintf 'library probe stdout\\n'\nprintf 'library probe stderr\\n' >&2\nexit 1\n"
+        } else {
+            "#!/bin/sh\nprintf 'test-tool 1.0\\n'\n"
+        };
+        std::fs::write(&program, script).unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_cargo-rvst"))
+        .env("PATH", temp.path())
+        .args(["doctor", "--format", "json", "--project"])
+        .arg(temp.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let libraries = value["data"]["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|check| check["name"] == "Linux audio/window libraries")
+        .unwrap();
+    assert_eq!(libraries["ok"], false);
+}

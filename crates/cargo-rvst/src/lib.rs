@@ -209,7 +209,31 @@ pub fn emit<T: Serialize>(output: Output, event: &str, value: &T) {
 pub fn emit_error(output: Output, error: OpError) -> i32 {
     let code = error.exit_code;
     match output {
-        Output::Human => eprintln!("{error}"),
+        Output::Human => {
+            eprintln!("{error}");
+            if error.code == "doctor_failed"
+                && let Some(checks) = error
+                    .details
+                    .as_ref()
+                    .and_then(|details| details["checks"].as_array())
+            {
+                for check in checks.iter().filter(|check| check["ok"] == false) {
+                    let name = check["name"].as_str().unwrap_or("Unknown check");
+                    let status = if check["required"] == true {
+                        "FAIL (required)"
+                    } else {
+                        "WARN (optional)"
+                    };
+                    eprintln!("  {name}: {status}");
+                    if let Some(detail) = check["detail"].as_str().filter(|s| !s.is_empty()) {
+                        eprintln!("    {detail}");
+                    }
+                    if let Some(setup) = check["setup"].as_str() {
+                        eprintln!("    Setup: {setup}");
+                    }
+                }
+            }
+        }
         _ => println!(
             "{}",
             serde_json::to_string(&Envelope::<serde_json::Value> {

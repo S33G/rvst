@@ -1266,16 +1266,23 @@ pub fn doctor(directory: &Path) -> serde_json::Value {
             .current_dir(directory)
             .output();
         let (ok, detail) = match result {
-            Ok(output) => (
-                output.status.success(),
-                String::from_utf8_lossy(&output.stdout).trim().to_string(),
-            ),
+            Ok(output) => {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let detail = [stdout.trim(), stderr.trim()]
+                    .into_iter()
+                    .filter(|part| !part.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                (output.status.success(), detail)
+            }
             Err(error) => (false, error.to_string()),
         };
         checks.push(serde_json::json!({"name":program,"ok":ok,"required":required,"detail":detail,"setup":setup}));
     }
     let targets = Command::new("rustup")
         .args(["target", "list", "--installed"])
+        .current_dir(directory)
         .output();
     let wasm = targets.is_ok_and(|output| {
         output.status.success()
@@ -1293,8 +1300,8 @@ pub fn doctor(directory: &Path) -> serde_json::Value {
     {
         let status = Command::new("pkg-config")
             .args(["--exists", "alsa", "x11", "xkbcommon"])
-            .status();
-        checks.push(serde_json::json!({"name":"Linux audio/window libraries","required":false,"ok":status.is_ok_and(|s|s.success()),"setup":"sudo apt install build-essential pkg-config libasound2-dev libx11-dev libxkbcommon-dev libwayland-dev libgl1-mesa-dev"}));
+            .output();
+        checks.push(serde_json::json!({"name":"Linux audio/window libraries","required":false,"ok":status.is_ok_and(|output|output.status.success()),"setup":"sudo apt install build-essential pkg-config libasound2-dev libx11-dev libxkbcommon-dev libwayland-dev libgl1-mesa-dev"}));
     }
     #[cfg(target_os = "windows")]
     {
