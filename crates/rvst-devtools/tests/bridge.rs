@@ -208,3 +208,54 @@ fn fragmented_headers_are_reassembled_before_authentication() {
     drop(session);
     std::fs::remove_dir(directory).unwrap();
 }
+
+#[test]
+fn favicon_is_empty_without_auth_but_still_checks_host_origin_and_method() {
+    let directory = std::env::temp_dir().join(format!("rvst-favicon-test-{}", std::process::id()));
+    let (session, _rt) = DebugSession::start_in("org.test.favicon", "Favicon", &directory).unwrap();
+    let info = session.info();
+    let request = |method: &str, path: &str, host: &str, origin: &str| {
+        let mut stream = TcpStream::connect(info.address).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        write!(
+            stream,
+            "{method} {path} HTTP/1.1\r\nHost: {host}\r\n{origin}Connection: close\r\n\r\n"
+        )
+        .unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        response
+    };
+    let host = info.address.to_string();
+    for origin in [String::new(), format!("Origin: http://{host}\r\n")] {
+        let response = request("GET", "/favicon.ico", &host, &origin);
+        let (headers, body) = response.split_once("\r\n\r\n").unwrap();
+        assert!(headers.starts_with("HTTP/1.1 204 No Content"), "{response}");
+        assert!(!headers.to_ascii_lowercase().contains("content-length:"));
+        assert!(body.is_empty());
+    }
+    for (method, path, request_host, origin, status) in [
+        ("GET", "/favicon.ico", "evil.example", "", "403"),
+        ("GET", "/favicon.ico", "", "", "403"),
+        (
+            "GET",
+            "/favicon.ico",
+            host.as_str(),
+            "Origin: https://evil.example\r\n",
+            "403",
+        ),
+        ("POST", "/favicon.ico", host.as_str(), "", "405"),
+        ("GET", "/favicon.ico/api/events", host.as_str(), "", "403"),
+        ("GET", "/api/events", host.as_str(), "", "403"),
+    ] {
+        let response = request(method, path, request_host, origin);
+        assert!(
+            response.starts_with(&format!("HTTP/1.1 {status}")),
+            "{response}"
+        );
+    }
+    drop(session);
+    std::fs::remove_dir(directory).unwrap();
+}

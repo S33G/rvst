@@ -449,6 +449,12 @@ fn respond(
             include_str!("../assets/index.html"),
         );
     }
+    if path == "/favicon.ico" {
+        // Browsers request this without the inspector token. It exposes no session data.
+        return stream.write_all(
+            b"HTTP/1.1 204 No Content\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n",
+        );
+    }
     if !constant_equal(auth.as_bytes(), token.as_bytes()) {
         return write_response(
             &mut stream,
