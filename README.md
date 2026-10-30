@@ -1,10 +1,15 @@
 # RVST
 
-**Rust audio plugins. One shared UI. A workbench for humans and agents.**
+**Build audio plugins in Rust. Share the editor. Own the whole project.**
 
 Build VST3 and CLAP plugins with direct Rust adapters, a skinnable egui editor,
 and a Cargo-native CLI/TUI. Run the same editor in your DAW, a standalone app,
 or a browser through WebAssembly. Every plugin gets its own repository.
+
+![RVST Debug shared Rust editor in the Studio skin, running in Chrome](docs/screenshots/debug-studio.jpg)
+
+*The actual egui editor compiled to WebAssembly. This browser preview uses a
+deterministic simulated host; audio processing runs natively.*
 
 [Get started](docs/getting-started.md) · [Documentation](docs/README.md) ·
 [CLI reference](docs/cli.md) · [Contributing](CONTRIBUTING.md)
@@ -13,6 +18,25 @@ or a browser through WebAssembly. Every plugin gets its own repository.
 > Use the source workflow below. Native validators and Chrome checks pass on
 > the tested macOS configuration; [DAW and platform qualification is tracked
 > separately](docs/validation-2026-10-30.md).
+
+## What the SDK gives you
+
+Write your processor and editor once. RVST supplies the host adapters, development
+runners and project tooling around them.
+
+| Build your plugin | RVST provides |
+| --- | --- |
+| Effects, instruments and MIDI tools | Direct VST3/CLAP adapters, audio buses, sidechains, f32/f64 processing and sample-offset events |
+| Automatable controls | Stable parameter identities, ranges, smoothing, gestures and versioned processing state |
+| An editor that feels like your product | Shared egui components, theme packs, fonts, artwork, scaling and keyboard controls |
+| A fast development loop | Native standalone runner and WASM preview of the same Rust UI |
+| Visibility into a running instance | Structured plugin logs, live parameter inspection, callback timing and queue/drop counters |
+| Repeatable debugging | Capture/replay tools, offline tests and native debugger workflows |
+| A repository you own | Cargo workspaces, Git, shareable Liquid templates, build helpers and agent-friendly commands |
+
+The adapters are owned by RVST; there is no nice-plug backend. The SDK is split
+into small crates, so the CLI does not pull in audio or graphical backends.
+[Architecture and boundaries →](docs/architecture.md)
 
 ## Start with RVST Debug
 
@@ -43,6 +67,18 @@ to hear the oscillator, or try the note buttons on **Events**.
 The generated repository contains a portable SDK snapshot. It builds without
 this checkout or an installed RVST command. See [prerequisites and the complete
 tour](docs/getting-started.md) if your machine needs setup.
+
+## One editor, your visual identity
+
+Keep layout and behavior in Rust. Skin colors, typography, spacing, controls and
+meters with a versioned theme manifest. Dark, Light and Studio packs ship with
+the framework; accessibility controls include scaling, high contrast and reduced
+motion.
+
+![RVST theme settings in the Light skin with accessibility and UI scaling controls](docs/screenshots/themes-light.jpg)
+
+*Same shared editor, different theme. This is the browser runner, not an HTML
+recreation of the plugin UI.* [Build a theme pack →](docs/themes.md)
 
 ## Choose your interface
 
@@ -103,9 +139,50 @@ cargo xtask web --serve --open
 Browser v1 uses a deterministic simulated host. It tests the shared Rust editor;
 audio runs in the native plugin or standalone app.
 
-The separate [live inspector](docs/diagnostics.md) receives real native plugin
-logs, parameters and performance metrics. Chrome DevTools can show those logs;
-native DSP breakpoints use LLDB or GDB.
+## See inside a running plugin
+
+![RVST live inspector showing native callback timing, parameters and filtered Gain changed plugin logs](docs/screenshots/live-inspector.jpg)
+
+*Captured from RVST Debug's native standalone instance on macOS. The log view is
+paused on real parameter-change events; timing values are a session snapshot,
+not a benchmark or DAW qualification.*
+
+Open the local inspector to follow structured logs, current parameters, callback
+timing distributions and dropped-event counters. Enable **Echo new logs to
+DevTools** to see incoming plugin events in Chrome's Console. The connection is
+local and authenticated; no cloud service is required.
+
+```sh
+cargo rvst inspect --format json
+cargo rvst inspect --open --instance INSTANCE_ID
+```
+
+Use an instance ID from the first command. Chrome debugs the inspector and WASM
+UI; stepping through native DSP uses LLDB/GDB. Recordings can feed offline replay
+and block stepping. [Logs, recording and debugger setup →](docs/diagnostics.md)
+
+## A normal Rust project after generation
+
+The generated workspace separates responsibilities so your DSP, editor and host
+integration can evolve independently:
+
+```text
+my-effect/
+├── crates/
+│   ├── plugin-core/        # Processor, parameters and state
+│   ├── plugin-ui/          # Shared Rust editor
+│   ├── plugin-native/      # VST3 / CLAP exports
+│   ├── plugin-standalone/  # Native development runner
+│   ├── plugin-web/         # WASM browser entry point
+│   └── xtask/              # Build, preview and bundle commands
+├── Cargo.toml
+└── Cargo.lock
+```
+
+Use `cargo build`, `cargo test`, `cargo fmt` and `cargo clippy` as usual. The
+vendored starter above builds after cloning elsewhere, even with RVST removed
+from `PATH`. No parent workspace changes, background package manager or silent
+regeneration of authored code.
 
 ## Explore the framework
 
@@ -119,7 +196,8 @@ native DSP breakpoints use LLDB or GDB.
 
 Build API documentation with `cargo doc --workspace --no-deps --open`.
 The [documentation index](docs/README.md) links guides, capability reports and
-release evidence.
+release evidence. [Screenshot capture notes](docs/screenshots/README.md) describe
+the examples shown above.
 
 ## Open source
 
