@@ -35,6 +35,34 @@ speaker-test -c 2 -t sine
 `pactl info` must show the detected server and `speaker-test` must be heard in
 Windows output before blaming any RVST runner.
 
+### ALSA default device
+
+CPAL opens ALSA's `default` PCM, which normally expands to hardware card 0. WSL
+has no sound cards, so point the default at Pulse once:
+
+```sh
+cat > ~/.asoundrc <<'EOF'
+# Route ALSA's default device to the PulseAudio server (WSLg socket).
+pcm.!default {
+    type pulse
+}
+ctl.!default {
+    type pulse
+}
+EOF
+```
+
+Without it CPAL fails with ``Unknown PCM default`` and "audio device is not
+available" even after `libasound2-plugins` is installed.
+
+### Expected underruns
+
+The WSLg sink starts `SUSPENDED`; its first buffers often underrun, and the
+runner reports `audio stream or processor reported errors` for a single stream
+error. Rerun — a clean full-duration run is the acceptance signal. Persistent
+underruns mean the Windows output device is busy; close other audio apps or
+raise the Pulse sink buffer instead of changing RVST latency budgets.
+
 ## Windows host server (TCP route)
 
 If WSLg's default socket is silent or you serve several WSL distributions, run
