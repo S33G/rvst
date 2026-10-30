@@ -1,5 +1,7 @@
 //! Load an actual VST3 binary, instantiate both COM classes and process audio.
-use std::{ffi::c_void, ptr};
+#[cfg(target_os = "macos")]
+use std::ffi::c_void;
+use std::ptr;
 use vst3::{
     ComPtr, Interface,
     Steinberg::{Vst::*, *},
