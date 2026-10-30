@@ -1,4 +1,5 @@
 [package]
+repository.workspace = true
 name = "rvst-ui"
 version.workspace = true
 edition.workspace = true
