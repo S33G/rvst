@@ -18,6 +18,7 @@ implemented behavior from tested platform and DAW combinations.
 | Change colors, typography and controls | [Shared UI and theme packs](themes.md) |
 | Undo control edits, resets and preset recalls | [Undo and redo](undo-redo.md) |
 | See native logs, inspect performance or replay a capture | [Diagnostics](diagnostics.md) |
+| Run native audio in WSL and route sound to Windows | [Audio on WSL](wsl-audio.md) |
 
 ## Understand the framework
 
