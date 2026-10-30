@@ -1,26 +1,70 @@
 # {{ plugin_name }}
 
-Independent RVST {{ kind }} plugin by {{ vendor }}. This repository owns the
-processor, shared UI, native exports, standalone app, browser runner and xtask.
+A polyphonic, MIDI-controlled sine instrument with a shared parameter
+editor. Start here for a synthesizer.
+
+An independent RVST {{ kind }} plugin by {{ vendor }}. You own the processor,
+shared editor, native wrappers and build tools in this repository.
+
+## First run
+
+Run commands from this repository's root. The included `rust-toolchain.toml`
+selects Rust 1.98.0, rustfmt and Clippy. Native builds also need your platform's
+compiler and audio/window libraries; see the
+[native setup guide](https://github.com/S33G/rvst/blob/main/docs/getting-started.md).
+{% if sdk_source == "registry" %}
+This project's registry SDK must be published before these commands can build;
+see [SDK and plugin identity](#sdk-and-plugin-identity) for the source alternative.
+{% endif %}
+```sh
+cargo run -p plugin-standalone --locked --features devtools
+```
+
+This opens the native editor and audio runner. The instrument stays silent
+until it receives notes; this starter editor has no on-screen keyboard. To
+play it, install a native bundle below, load it on a DAW instrument track and
+route MIDI to it. The offline record/replay command below also exercises notes.
+
+The standalone uses your default audio output. It does not open a microphone
+or physical MIDI devices. Close its window to stop it.
+
+## Your project
+
+| Start here | Owns |
+| --- | --- |
+| [plugin-core](crates/plugin-core/src/lib.rs) | Processor, parameters, state, identity and DSP tests |
+| [plugin-ui](crates/plugin-ui/src/lib.rs) | Shared Rust editor and its appearance |
+| [plugin-native](crates/plugin-native/src/lib.rs) | VST3 and CLAP exports |
+| [plugin-standalone](crates/plugin-standalone/src/main.rs) | Desktop audio runner |
+| [plugin-web](crates/plugin-web/src/lib.rs) | Browser editor entry point |
+| [xtask](crates/xtask/src/main.rs) | Bundling, installation, web build and offline replay |
+
+## Build, bundle and install
+
+| Command | Result |
+| --- | --- |
+| `cargo build --locked` | Compiles the workspace; no plugin installation |
+| `cargo xtask bundle --release` | Builds VST3 and CLAP bundles under Cargo's `target/bundled/` |
+| `cargo xtask install` | Builds development bundles and copies them to your user plugin folders |
+| `cargo xtask install --release` | Builds and installs release bundles |
+
+Use `bundle vst3` or `bundle clap` to select one format. Bundle/install also
+accept `--target`, `--profile` or `--features`; use either `--release` or
+`--profile`. The command prints the resulting paths. After installing, rescan
+plugins in your DAW. Validate the bundles and test real DAW sessions before
+shipping; compilation and unit tests do not establish host compatibility.
+
+Regular development uses Cargo:
 
 ```sh
-cargo build --locked
 cargo test --workspace --locked
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo xtask bundle --release
 ```
 
-For local development with live browser logs:
+## Preview the editor in a browser
 
-```sh
-cargo run -p plugin-standalone --features devtools
-# In another terminal, if cargo-rvst is installed:
-cargo rvst inspect --open
-```
-
-The standalone runs real native audio. The browser preview uses the same Rust
-editor against a simulated host; browser DSP is intentionally disabled.
+Install the WASM target and the CLI version matching this project's lockfile:
 
 ```sh
 rustup target add wasm32-unknown-unknown
@@ -28,25 +72,65 @@ cargo install wasm-bindgen-cli --version 0.2.130 --locked
 cargo xtask web --serve --open
 ```
 
-Record/replay a deterministic offline fixture, including MIDI and block boundaries:
+This runs the same Rust editor against a simulated host. It previews controls,
+themes and parameter state; it does not process browser audio. Stop the server
+with Ctrl+C. If the `wasm-bindgen` dependency changes, match its CLI version too.
+
+## Inspect native logs and reproduce processing
+
+With the first-run command still running, follow the native inspector link in
+the editor or open the URL printed in the terminal. It shows native logs,
+parameters and callback metrics. With the optional `cargo-rvst` tool installed,
+you can also discover running instances from another terminal:
+
+```sh
+cargo rvst inspect --open
+```
+
+Choose **Echo new logs to DevTools** in the inspector to view new native events
+in Chrome's Console. For native source breakpoints, use the supplied
+[CodeLLDB launch/attach configurations](.vscode/launch.json).
+
+To record and replay a deterministic **offline test fixture**:
 
 ```sh
 cargo xtask record capture.json --blocks 64
 cargo xtask replay capture.json --step
 ```
 
-`cargo xtask install` explicitly installs development bundles into user plugin
-folders. `cargo xtask bundle --release` creates bundles without installing them.
-Add `--target`, `--profile` or `--features` when needed. Native debugging uses the
-included `.vscode/launch.json` CodeLLDB configurations, or `lldb --
-target/debug/plugin-standalone` (`gdb --args` on Linux). Chrome inspects the live
-logs and browser UI; source stepping native DSP requires the native debugger.
+Use a new output filename for each recording. This fixture exercises processing
+and block boundaries; it is not a recording of the running DAW or standalone app.
 
-SDK source: `{{ sdk_source }}`. Registry dependencies require a published RVST
-release. Before publication use an explicit SDK override or a vendored snapshot.
-The provenance files record template inputs, identities and source. Keep the
-plugin ID and VST3 class identity unchanged after release, including renames.
+## Change the sound and appearance
 
-No global RVST tool is required for the Cargo commands above. Qualify actual
-bundles with VST3/CLAP validators and real DAWs before distributing a release.
-Tests and compilation alone do not establish host compatibility.
+Edit [plugin-core](crates/plugin-core/src/lib.rs) for processor behavior. Keep
+allocations, blocking calls and I/O off the audio callback.
+
+The [shared editor](crates/plugin-ui/src/lib.rs) currently calls
+`rvst_ui::default_editor`. Try the bundled Dark, Light and Studio skins in the
+editor, then replace that call with your own Rust layout. The
+{% if sdk_source == "vendor/rvst" %}[theme guide](vendor/rvst/docs/themes.md){% else %}[theme guide](https://github.com/S33G/rvst/blob/main/docs/themes.md){% endif %} explains token manifests, fonts and SVG artwork.
+Keep platform services outside this shared editor so it can run in every host.
+
+## SDK and plugin identity
+
+SDK source: `{{ sdk_source }}`.
+
+{% if sdk_source == "vendor/rvst" %}The SDK snapshot lives in [vendor/rvst](vendor/rvst). Commit it with this
+repository: a clone builds without the original RVST checkout or a global
+`cargo-rvst` installation. Rust and the other Cargo dependencies are still
+required; the SDK snapshot does not vendor crates.io dependencies.
+{% elsif sdk_source == "registry" %}This project uses registry dependencies. It needs a published, compatible RVST
+release; RVST 0.1.0 is currently unpublished. Until publication, generate a new
+project with `--sdk-path /path/to/rvst --vendor-sdk` for a portable SDK snapshot.
+{% else %}This project uses absolute development paths to an RVST checkout. A clone still
+needs that checkout at the recorded path, or updated dependency paths. To make
+a portable project at generation time, use `--sdk-path /path/to/rvst --vendor-sdk`.
+{% endif %}
+
+Keep [rvst-project.json](rvst-project.json) for generation provenance. The
+[workspace manifest](Cargo.toml) records the bundle name and plugin ID;
+[plugin-core](crates/plugin-core/src/lib.rs) contains the descriptor and VST3
+class ID. After release, preserve the plugin ID, VST3 class ID and parameter IDs,
+even if you rename the display name. Hosts use these identities to restore
+existing sessions and automation.

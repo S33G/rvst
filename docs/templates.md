@@ -1,50 +1,132 @@
-# Declarative templates and independent projects
+# Templates and independent projects
 
-`cargo rvst new` creates an independent Cargo workspace and Git repository. The
-new root contains `[workspace]`, so parent Cargo/Git workspaces do not adopt it.
-Generation stages files in a sibling directory and atomically publishes them;
-an existing destination is a conflict (exit 4), never a merge destination.
+[Documentation](README.md) · [Getting started](getting-started.md)
+
+`cargo rvst new` creates a separate Cargo workspace and, by default, a new Git
+repository. Choose a starter, supply an SDK, then work in the generated project
+with normal Cargo commands. The generated README is its day-to-day guide.
+
+## Choose a starter
+
+| Template | Best starting point | Included behavior |
+| --- | --- | --- |
+| `debug` | Explore RVST interactively | Gain, tone, events, themes and diagnostics tour |
+| `gain` | Build an audio effect | Stereo gain, bypass and sample-accurate parameter events |
+| `instrument` | Build a synthesizer | Polyphonic MIDI-controlled sine instrument |
+| `midi` | Build a MIDI effect | Transpose with preserved note-off mapping |
+
+Each starter separates the processor, shared egui editor, VST3/CLAP wrappers,
+standalone runner, browser editor and project-owned `xtask`. Browser previews
+simulate the host UI; native runners process audio.
 
 ```sh
 cargo rvst templates list
-cargo rvst templates inspect debug
-cargo rvst templates check --path ./my-template
-cargo rvst new ./my-gain --template gain --vendor 'Example Audio' --id com.example.gain
-cargo rvst --format json --dry-run new ./planned --template instrument
+cargo rvst templates inspect gain
 ```
 
-Builtins are `debug`, `gain`, `instrument`, and `midi`. The MIDI template accepts `--set audio_mode=pure-midi` (default) or `--set audio_mode=pass-through`, which adds unchanged stereo audio routing. Builtin contents are
-embedded in the installed executable, so generation does not need the framework
-source checkout. `debug` is the interactive feature tour used by `cargo rvst
-showcase`. Each project separates core DSP, shared egui UI, native VST3/CLAP
-wrappers, desktop runner, browser editor, and its typed `xtask`.
+Builtin templates are embedded in the installed executable. The generator does
+not need a framework checkout to list or render them; compiling a generated
+project still needs its SDK dependencies.
 
-## SDK selection before publication
+## Choose the SDK explicitly
 
-Registry dependencies are the portable default. RVST 0.1.0 is not implied to be
-published by generation. Before publication, choose the SDK explicitly:
+**RVST 0.1.0 is currently unpublished.** The generator defaults to registry
+references, but those references are not usable until the packages are published.
+Use one of the source modes below today.
+
+| Generation options | Generated dependencies | Use when |
+| --- | --- | --- |
+| `--sdk-path /path/to/rvst --vendor-sdk` | Relative paths into `vendor/rvst` | Share or clone an independent project |
+| `--sdk-path /path/to/rvst` | Absolute paths to that checkout | Develop the SDK and plugin together |
+| Neither option | Registry versions | A compatible SDK release has been published |
+
+Create a portable starter with a deliberate name, vendor and plugin identity:
 
 ```sh
-cargo rvst new ./my-gain --template gain --sdk-path /path/to/rvst
-cargo rvst new ./portable-gain --template gain --sdk-path /path/to/rvst --vendor-sdk
-cargo rvst showcase --path ./rvst-debug --sdk-path /path/to/rvst --install --run --open
+cargo rvst new ./my-gain --template gain \
+  --sdk-path /path/to/rvst --vendor-sdk \
+  --set plugin_name='My Gain' --vendor 'Example Audio' --id com.example.gain
+cd my-gain
+cargo run -p plugin-standalone --locked -- --tone 220
 ```
 
-`--sdk-path` records absolute development dependencies in the generated
-manifests. `--vendor-sdk` instead snapshots the SDK into `vendor/rvst` and emits
-relative dependencies. It includes SDK crates, templates, docs, licenses, and
-third-party notices. The generated workspace excludes the vendored workspace.
-Neither mode silently discovers or adopts a framework checkout. Builtin `Cargo.lock` files pin this source/vendored SDK mode, so a freshly generated project supports immediate `cargo build --locked --offline` when the pinned dependencies are cached. Publishing registry-backed RVST requires regenerating those lockfiles against the published packages; generation does not pretend the unpublished SDK is available.
+The output directory sets `crate_name`, while `plugin_name` has the template's
+display-name default unless overridden. For example, a gain starter is named
+**Stereo Gain** by default, regardless of the directory name.
 
-`rvst-project.json` records template origin/version, resolved Git SHA when
-registered from Git, typed input values, SDK compatibility requirement, SDK
-source, and whether the SDK is a development override or vendored snapshot.
-Keep it with the generated project. The manifest records a per-project bundle
-name and stable reverse-domain ID; installed projects get distinct filenames.
+`--vendor-sdk` requires `--sdk-path`. It snapshots SDK crates, embedded templates,
+docs, licenses and third-party notices. Commit `vendor/rvst` with the generated
+project: its relative dependencies work in another clone without the original
+checkout. Third-party Cargo dependencies are not vendored by this option.
+
+The generated workspace excludes the vendored SDK workspace. An absolute SDK
+path remains tied to its local checkout. Neither mode silently discovers or
+adopts an SDK from a parent directory.
+
+### Lockfiles and offline builds
+
+Builtin lockfiles cover the source and vendored SDK modes. A new project can run
+`cargo build --locked --offline` when its toolchain and pinned dependencies are
+already installed or cached. Offline does not mean dependency-free.
+
+Before shipping registry-backed templates, regenerate their lockfiles against
+the published packages. Generation does not make an unpublished SDK available.
+
+## Customize project inputs
+
+Pass repeatable `--set NAME=VALUE` options. Common builtin inputs are:
+
+| Input | Default or purpose |
+| --- | --- |
+| `crate_name` | Output directory name; Rust project identifier |
+| `plugin_name` | Template display name shown to hosts |
+| `vendor` | Vendor label; `--vendor` is a shorthand |
+| `plugin_id` | `org.rvst.<crate_name>`; `--id` is a shorthand |
+| `url`, `email` | Vendor website and support address |
+| `audio_mode` | MIDI template only: `pure-midi` or `pass-through` |
+
+`pure-midi` declares no audio ports. `pass-through` adds unchanged stereo audio:
+
+```sh
+cargo rvst new ./my-midi --template midi \
+  --sdk-path /path/to/rvst --vendor-sdk \
+  --set audio_mode=pass-through
+```
+
+Unknown names, invalid values, missing required inputs and duplicate assignments
+are errors. Use `templates inspect` to see a template's typed inputs before
+creating a project.
+
+### Identity and provenance
+
+Keep `rvst-project.json` with the project. It records template origin/version,
+the resolved Git SHA for Git registrations, input values, SDK compatibility and
+whether the SDK is an external checkout or a vendored snapshot.
+
+The generated `Cargo.toml` records the bundle name and plugin ID. The descriptor
+in `crates/plugin-core/src/lib.rs` contains the plugin ID and VST3 class identity.
+Preserve shipped plugin, class and parameter IDs when changing display names;
+existing host sessions and automation depend on those identities.
+
+### Destination safety
+
+Generation stages files in a sibling directory, then atomically publishes the
+new project. An existing destination is a conflict (exit 4), never a merge target.
+The new `[workspace]` and default Git repository keep it separate from parent
+workspaces. Use `--no-git` when you deliberately want to manage Git yourself.
+
+Preview the operation without creating it:
+
+```sh
+cargo rvst --format json --dry-run new ./planned --template instrument \
+  --sdk-path /path/to/rvst --vendor-sdk
+```
 
 ## Author a template
 
-```
+A template is a manifest plus declarative files. It has no executable hooks.
+
+```text
 my-template/
   rvst-template.toml
   README.md
@@ -52,6 +134,11 @@ my-template/
     Cargo.toml.liquid
     src/lib.rs.liquid
 ```
+
+The top-level README describes the template. Put `README.md.liquid` inside
+`files/` if you also want a README in each generated project.
+
+### Manifest and typed inputs
 
 ```toml
 schema_version = 1
@@ -78,66 +165,112 @@ choices = ["f32", "f64"]
 default = "f32"
 ```
 
-Schema 1 supports `string`, `identifier`, `bool`, `integer`, `number`, and
-`choice`. Identifiers start with a lowercase ASCII letter and contain lowercase
-letters, digits, `_`, or `-`, with a maximum length of 64. Numerical values must
-be finite. Unknown input names, missing required inputs, and invalid typed
-values fail before publication. Template `version` is semver and `sdk_version`
-is a semver requirement checked against the generator SDK version. Older schema
-1 manifests without these fields default to `0.1.0` and `^0.1`.
+| Schema 1 type | Constraint |
+| --- | --- |
+| `string` | Text value |
+| `identifier` | Lowercase ASCII letter first; then lowercase letters, digits, `_` or `-`; maximum 64 characters |
+| `bool` | Boolean value |
+| `integer` | Integer value |
+| `number` | Finite numeric value |
+| `choice` | One of the declared choices |
 
-Input defaults can be overridden using repeatable `--set NAME=VALUE`.
-`--vendor` and `--id` are conveniences for the builtin `vendor` and `plugin_id`
-inputs. Supplying a value twice is an error. `crate_name` defaults to the output
-directory name. The builtin `plugin_id` defaults to `org.rvst.<crate_name>`.
+`version` must be semver. `sdk_version` is a semver requirement checked against
+the generator SDK version. Older schema 1 manifests without those fields default
+to `0.1.0` and `^0.1`. Unknown manifest fields are rejected.
+
+### Rendering and formatting
 
 Every relative output path is rendered with Liquid. Files ending in `.liquid`
-are UTF-8 rendered contents and lose that suffix. Generated `.rs` files, including
-plain Rust source files, are then formatted as Rust 2024 through rustfmt stdin.
-The built-in formatter step disables child-module traversal and ignores external
-rustfmt configuration; it does not process copied vendored SDK files. Other files
-are copied as bytes. Install the required formatter with
-`rustup component add rustfmt`; missing rustfmt returns exit 3 and rolls back the
-staged project. Builtin templates use Rust-escaped string variables to keep metadata
-values safe in source. Unknown manifest fields are rejected. Templates cannot
-use executable hooks, symlinks, special files, absolute paths, parent traversal,
-or write Git internals. `templates check` verifies manifest compatibility,
-filesystem safety, and Liquid syntax. Rendering still checks every resolved
-output path and required input.
+also render their UTF-8 contents and lose that suffix. Other file contents are
+copied as bytes, except generated Rust source is formatted after rendering.
 
-## Register local or pinned Git sources
+Use the builtin Rust-escaped string variables, such as `plugin_name_rust` and
+`plugin_id_rust`, when inserting metadata into Rust string expressions:
+
+```liquid
+const NAME: &str = {{ plugin_name_rust }};
+```
+
+All generated `.rs` files pass through rustfmt as Rust 2024, including plain
+source files. The formatter disables child-module traversal and ignores external
+rustfmt configuration. It does not reformat the copied SDK snapshot.
+
+```sh
+rustup component add rustfmt
+cargo rvst templates check --path ./my-template
+```
+
+Missing rustfmt returns exit 3 and rolls back the staged project. Templates
+cannot contain symlinks, special files, absolute paths, parent traversal or writes
+to Git internals. `templates check` validates manifest compatibility, filesystem
+safety and Liquid syntax. Generation additionally validates resolved output
+paths and required inputs.
+
+## Register local or pinned Git templates
 
 ```sh
 cargo rvst templates add my-local ./my-template
-cargo rvst templates add my-team --git https://example.com/team/template.git --rev FULL_40_CHARACTER_COMMIT_SHA
-cargo rvst new ./my-plugin --template my-team
+cargo rvst templates add my-team \
+  --git https://example.com/team/template.git \
+  --rev FULL_40_CHARACTER_COMMIT_SHA
+cargo rvst new ./my-plugin --template my-team \
+  --sdk-path /path/to/rvst --vendor-sdk
 ```
 
-Git registration requires a full commit SHA, verifies checked-out HEAD, validates
-the template, and records the source and revision. Mutable branch names are not
-pins. HTTP URLs containing credentials are rejected; use Git credential helpers.
-Local registrations reference the canonical local path and reflect subsequent
-edits. Registrations cannot overwrite an existing name. Registry state lives in
-`$RVST_HOME`, or `~/.config/rvst` by default.
+| Source | Update behavior |
+| --- | --- |
+| Local directory | Canonical path is recorded; later edits are reflected |
+| Git repository | Full commit SHA is required and checked against HEAD |
 
-## Studio and machine usage
+Mutable branch names are not pins. Use Git credential helpers; HTTP URLs with
+embedded credentials are rejected. Registrations cannot overwrite an existing
+name. Registry state lives in `$RVST_HOME`, or `~/.config/rvst` by default.
 
-`cargo rvst studio` opens searchable templates, a typed creation wizard, live
-build logs, a command palette, and the equivalent CLI command. `s` starts the
-RVST Debug wizard; Tab changes fields, F2 toggles a portable SDK, Enter starts
-work, Esc cancels a task, and Ctrl+Y copies its command using OSC 52. Work runs
-outside the render loop. Quitting cancels and joins task workers.
+## Studio and automation
 
-`--format human|json|jsonl` applies to commands; `--output` is an alias. JSON is a
-single schema-versioned result or error record. JSONL adds task-start and log
-records. `--non-interactive` rejects the studio and never prompts. `--dry-run`
-plans generation, registration, tasks, or showcase without performing them.
-`--manifest-path`, `-p/--package`, `--target`, `--profile`, and `--features`
-forward Cargo options; packaging/web forward plugin options through `xtask`.
-Package format selection uses `--plugin-format all|vst3|clap`.
+`cargo rvst studio` provides searchable templates, a typed creation wizard,
+live build logs and equivalent CLI commands. Work runs outside the render loop;
+quitting cancels and joins task workers.
 
-Exit codes: 0 success, 1 operation/test/I/O failure, 2 usage/invalid input,
-3 unavailable dependency or incompatible template, 4 conflicting destination
-or registration, and 130 cancellation.
+| Key | Action |
+| --- | --- |
+| `s` | Start the RVST Debug wizard |
+| Tab | Change field |
+| F2 | Toggle portable SDK mode |
+| Enter | Start work |
+| Esc | Cancel a task |
+| Ctrl+Y | Copy the equivalent command using OSC 52 |
 
-The regression script `python3 scripts/check-generated.py` generates all four templates (both MIDI modes), checks formatting, builds and tests with `--locked --offline`, runs Clippy, and checks that Cargo.lock remains unchanged. Add `--vendor-sdk` to verify portable snapshots.
+For scripted use:
+
+| Option | Behavior |
+| --- | --- |
+| `--format human\|json\|jsonl` | Human text, one schema-versioned record, or task/log records; `--output` is an alias |
+| `--non-interactive` | Rejects Studio and never prompts |
+| `--dry-run` | Plans generation, registration, tasks or showcase without performing them |
+| `--manifest-path`, `-p/--package`, `--target`, `--profile`, `--features` | Forward Cargo selection options where supported |
+| `--plugin-format all\|vst3\|clap` | Selects native formats for packaging |
+
+| Exit code | Meaning |
+| --- | --- |
+| `0` | Success |
+| `1` | Operation, test or I/O failure |
+| `2` | Usage or invalid input |
+| `3` | Missing dependency or incompatible template |
+| `4` | Destination or registration conflict |
+| `130` | Cancellation |
+
+## Verify builtin template changes
+
+From the RVST source checkout:
+
+```sh
+python3 scripts/check-generated.py
+python3 scripts/check-generated.py --vendor-sdk
+```
+
+The script generates all four templates, including both MIDI modes, then checks
+formatting, builds, processor tests and Clippy with locked offline dependencies.
+It also checks that each generated lockfile remains unchanged. Use
+`--template gain` to narrow a development run. These checks validate generation
+and builds; native validator and DAW acceptance remain separate work.
