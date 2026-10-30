@@ -92,6 +92,7 @@ to build, test, package, record, replay or preview them.
 - [Template authoring](docs/templates.md)
 - [Release and qualification](docs/releases.md)
 - [Implementation ledger and limitations](docs/implementation.md)
+- [Verified builds, browser checks and remaining qualification](docs/validation-2026-10-30.md)
 - [Dependency and asset notices](THIRD_PARTY_NOTICES.md)
 
 Run `cargo doc --workspace --no-deps --open` for Rust API documentation.

@@ -6,8 +6,9 @@ native/WASM egui editors, a standalone runner, and one operations layer for the
 CLI and terminal workbench. The SDK is not yet published on crates.io.
 
 This ledger separates source capabilities from artifact and host qualification.
-Final regenerated RVST Debug validation is pending; an implemented API, a test
-fixture, or an earlier gain-plugin result does not establish that acceptance.
+Current Debug, browser and install results are recorded in the
+[30 October verification report](validation-2026-10-30.md). An implemented API
+or a fixture test does not establish real DAW acceptance.
 
 ## Implemented capabilities
 
@@ -43,9 +44,9 @@ configuration is not evidence that those jobs have run successfully.
 
 The [native status report](native-status.md) records the separately scoped macOS
 ARM64 gain-fixture smoke-host and validator results. Keep those results tied to
-their tested fixture and artifact. Final Debug builds, browser interactions,
-packaged native validation, clone/install checks and any Hollow Point migration
-results must be recorded separately when their current-artifact checks finish.
+their tested fixture and artifact. The [Debug validation report](debug-validation.md) records the installed
+showcase binaries and their hashes. The [integration report](validation-2026-10-30.md)
+records browser interactions, install checks and Hollow Point migration evidence.
 
 Release qualification targets are macOS 14.2+ arm64/x64, Windows 11 x64 and
 Ubuntu 24.04 x64 with X11/XWayland. Real DAW acceptance, Windows/Linux native

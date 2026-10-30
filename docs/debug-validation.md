@@ -2,7 +2,10 @@
 
 The permanent `../rvst-debug` project was generated with a vendored SDK and its
 installed development bundles were tested on **macOS 26.7.1 (25G241), arm64**.
-This is current Debug evidence, separate from the earlier gain-fixture results.
+The final validator rerun covers the rebuilt bundles after the keyboard-gesture
+and inspector favicon fixes. They were built with the project’s own
+`rvst-debug/target` directory. This is current Debug evidence, separate from the
+earlier gain-fixture results.
 
 | Check | Result |
 | --- | --- |
@@ -16,11 +19,12 @@ Validated installed bundles:
 - `~/Library/Audio/Plug-Ins/CLAP/rvst-debug.clap`
 - `~/Library/Audio/Plug-Ins/VST3/rvst-debug.vst3`
 
+The installed binaries contain the inspector favicon response and Console hint.
 Both `Contents/MacOS/rvst-debug` binaries had the same SHA-256 before and after
 validation:
 
 ```text
-3b578ad6fbc2143fb91b33cf60bcfe2aafe352d7a3ae490ec532d299f5310b17
+493b93a6b7beb525ec51a66f1f183d865b52f7da40e5a72bce6eef225bd09339
 ```
 
 CLAP skipped three unimplemented preset-discovery checks, plus the
@@ -39,7 +43,7 @@ Raw reports remain under ignored `.local/native-validation/`:
 
 - `clap-debug-final.json` and `clap-debug-final.stderr.log`
 - `pluginval-debug-final-console.log` and `pluginval-debug-final`
-- `debug-final-sha256.txt`
+- `debug-final-sha256.txt` and `debug-final-summary.json`
 
 The validation commands used the installed bundle paths:
 
