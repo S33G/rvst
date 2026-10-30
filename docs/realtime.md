@@ -40,3 +40,11 @@ Recording uses a preallocated slot pool. The audio producer never frees slots
 when full; the off-thread drain copies completed blocks and returns slots. A lost
 block or output event marks the capture incomplete. Offline replay checks schema,
 identity, shape, event timing, numerical output and recorded musical outputs.
+
+Run `python3 scripts/check-generated.py` to check fresh generated workspaces,
+or add `--template gain` for one starter. The script isolates each project's
+Cargo target directory, including both MIDI variants, and keeps the CLI build
+separate. A caller-provided `CARGO_TARGET_DIR` is used only as the parent of the
+CLI cache. When building multiple generated projects manually, keep separate
+target directories: they reuse package names such as `xtask` and
+`plugin-native`, so sharing output paths can select another project's binary.
