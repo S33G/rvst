@@ -402,12 +402,28 @@ pub fn parameter_knob(
             value = spec.denormalize(normalized);
         }
         if response.has_focus() {
-            let direction = ui.input(|i| {
-                i.num_presses(egui::Key::ArrowUp) as i32
-                    + i.num_presses(egui::Key::ArrowRight) as i32
-                    - i.num_presses(egui::Key::ArrowDown) as i32
-                    - i.num_presses(egui::Key::ArrowLeft) as i32
+            ui.memory_mut(|memory| {
+                memory.set_focus_lock_filter(
+                    response.id,
+                    egui::EventFilter {
+                        horizontal_arrows: true,
+                        vertical_arrows: true,
+                        ..Default::default()
+                    },
+                );
             });
+            let (increment, decrement) = ui.input(|i| {
+                (
+                    i.num_presses(egui::Key::ArrowUp) + i.num_presses(egui::Key::ArrowRight),
+                    i.num_presses(egui::Key::ArrowDown) + i.num_presses(egui::Key::ArrowLeft),
+                )
+            });
+            if increment + decrement > 0 {
+                // On the first frame after focus is acquired, egui may already
+                // have queued spatial navigation before this filter was set.
+                ui.memory_mut(|memory| memory.move_focus(egui::FocusDirection::None));
+            }
+            let direction = increment as i32 - decrement as i32;
             if direction != 0 {
                 value = spec.clamp(
                     value + direction as f64 * spec.step.unwrap_or((spec.max - spec.min) / 100.0),
@@ -669,6 +685,94 @@ mod interaction_tests {
         output.textures_delta.clear();
         assert!((host.value - 1.1).abs() < 1e-9);
         assert_eq!(host.gestures, vec![true, false]);
+    }
+
+    #[test]
+    fn repeated_knob_arrows_keep_focus_and_only_edit_the_focused_parameter() {
+        fn frame(
+            ctx: &egui::Context,
+            input: egui::RawInput,
+            gain: &mut Host,
+            tone: &mut Host,
+            horizontal: bool,
+        ) -> [egui::Id; 2] {
+            let mut ids = [egui::Id::NULL; 2];
+            let mut output = ctx.run_ui(input, |ui| {
+                let controls = |ui: &mut egui::Ui| {
+                    ids[0] = parameter_knob(ui, gain, &PARAMS[0]).id;
+                    ids[1] = parameter_knob(
+                        ui,
+                        tone,
+                        &ParameterSpec {
+                            id: 8,
+                            name: "Tone",
+                            ..PARAMS[0]
+                        },
+                    )
+                    .id;
+                };
+                if horizontal {
+                    ui.horizontal(controls);
+                } else {
+                    ui.vertical(controls);
+                }
+            });
+            output.textures_delta.clear();
+            ids
+        }
+        fn key_input(key: egui::Key, repeat: bool) -> egui::RawInput {
+            egui::RawInput {
+                events: vec![egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed: true,
+                    repeat,
+                    modifiers: egui::Modifiers::default(),
+                }],
+                ..Default::default()
+            }
+        }
+        for (horizontal, arrow, expected) in [
+            (true, egui::Key::ArrowRight, [1.1, 1.2]),
+            (false, egui::Key::ArrowDown, [0.9, 0.8]),
+        ] {
+            // The first arrow may arrive immediately after focus is acquired.
+            for idle_frames in [0, 1] {
+                let ctx = egui::Context::default();
+                let mut gain = Host {
+                    value: 1.0,
+                    ..Default::default()
+                };
+                let mut tone = Host::default();
+                let ids = frame(&ctx, Default::default(), &mut gain, &mut tone, horizontal);
+                ctx.memory_mut(|m| m.request_focus(ids[0]));
+                for _ in 0..idle_frames {
+                    frame(&ctx, Default::default(), &mut gain, &mut tone, horizontal);
+                }
+                for (press, value) in expected.into_iter().enumerate() {
+                    frame(
+                        &ctx,
+                        key_input(arrow, press > 0),
+                        &mut gain,
+                        &mut tone,
+                        horizontal,
+                    );
+                    assert!((gain.value - value).abs() < 1e-9);
+                    assert_eq!(tone.value, 0.0);
+                    assert_eq!(ctx.memory(|m| m.focused()), Some(ids[0]));
+                }
+                assert_eq!(gain.gestures, [true, false, true, false]);
+                assert!(tone.gestures.is_empty());
+                frame(
+                    &ctx,
+                    key_input(egui::Key::Tab, false),
+                    &mut gain,
+                    &mut tone,
+                    horizontal,
+                );
+                assert_eq!(ctx.memory(|m| m.focused()), Some(ids[1]));
+            }
+        }
     }
 
     #[test]
