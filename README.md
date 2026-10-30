@@ -82,12 +82,29 @@ recreation of the plugin UI.* [Build a theme pack →](docs/themes.md)
 
 ## Choose your interface
 
+### RVST Studio: a workbench in your terminal
+
+![RVST Studio TUI with templates, live native plugin telemetry, logs and the equivalent CLI command](docs/screenshots/studio-tui.jpg)
+
+Browse and search starters, create an independent plugin repository, then develop,
+test and package from the keyboard. Native plugin logs and callback metrics feed
+the workbench while you work. Press `:` for the command palette, `/` to filter
+templates, or Ctrl-Y to copy the displayed CLI command.
+
+*Actual TUI output from a 130 × 36 terminal, rendered with xterm.js. Telemetry
+comes from RVST Debug's native standalone instance. [Capture notes](docs/screenshots/README.md#terminal-workbench-captures).*
+
 Install the lightweight workbench from the framework checkout:
 
 ```sh
 cargo install --path crates/cargo-rvst --locked
 cargo rvst
 ```
+
+### The same operations for humans and agents
+
+The TUI and explicit CLI commands use the same Rust operation layer. Use JSON
+or JSONL for scripts, with versioned results and consistent exit codes.
 
 | Interface | Start here |
 | --- | --- |

@@ -116,6 +116,12 @@ The inspector omits private capability URLs from its machine snapshots.
 
 ## Studio keyboard map
 
+![RVST Studio command palette with create, develop, test, inspect and package actions](screenshots/studio-palette.jpg)
+
+Press `:` from the main view to open this palette. Select an action with the
+arrow keys and press Enter. The underlying operations are also available as
+explicit CLI commands. This image is a [render of captured terminal output](screenshots/README.md#terminal-workbench-captures).
+
 Studio manages the current project. Open it from that repository with
 `cargo rvst`, or use `cargo rvst studio --project PATH`.
 
