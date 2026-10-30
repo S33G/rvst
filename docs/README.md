@@ -15,6 +15,7 @@ implemented behavior from tested platform and DAW combinations.
 | Create or share a starter | [Templates and project generation](templates.md) |
 | Change colors, typography and controls | [Shared UI and theme packs](themes.md) |
 | See native logs, inspect performance or replay a capture | [Diagnostics](diagnostics.md) |
+| Run native audio in WSL and route sound to Windows | [Audio on WSL](wsl-audio.md) |
 
 ## Understand the framework
 
