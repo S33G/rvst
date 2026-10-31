@@ -9,9 +9,3 @@ Load only the skill matching the task:
 [DSP/UI/SDK changes](skills/rvst-develop/SKILL.md), or
 [diagnostics and qualification](skills/rvst-debug/SKILL.md).
 Start there; follow references on demand instead of reading all docs.
-
-Every commit must include the exact trailer:
-
-```text
-Co-Author: Charlie's Agent
-```
