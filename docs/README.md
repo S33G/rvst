@@ -11,6 +11,7 @@ implemented behavior from tested platform and DAW combinations.
 | Goal | Read |
 | --- | --- |
 | Try RVST Debug and preview its Rust UI | [Getting started](getting-started.md) |
+| Install the CLI in WSL | [WSL setup](wsl.md) |
 | Use the terminal workbench or automate a task | [CLI and TUI reference](cli.md) |
 | Build with a coding agent and minimal context | [Agent skills](agent-skills.md) |
 | Create or share a starter | [Templates and project generation](templates.md) |

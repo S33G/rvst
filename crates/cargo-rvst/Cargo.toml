@@ -10,6 +10,10 @@ license.workspace = true
 name = "cargo-rvst"
 path = "src/main.rs"
 
+[[bin]]
+name = "rvst"
+path = "src/main.rs"
+
 [dependencies]
 rvst-ops = { path = "../rvst-ops", version = "0.1.0" }
 rvst-devtools = { path = "../rvst-devtools", version = "0.1.0" }

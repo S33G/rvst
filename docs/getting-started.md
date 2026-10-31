@@ -2,22 +2,48 @@
 
 [Documentation](README.md) / Getting started
 
-The shortest path is **RVST Debug → your own repository → shared UI preview →
-native plugin**. Start with the showcase to explore the framework before
-writing DSP.
+Start by installing the `rvst` command, then create an independent plugin
+project. The setup wizard installs the CLI; the SDK is still an unpublished
+development preview, so new projects need an RVST source checkout.
 
-## 1. Prepare the toolchain
+## 1. Install the command
 
-Install Rust through rustup and Git. The repository pins **Rust 1.98.0** and
-uses Cargo for building, testing and tool installation.
+On macOS, Linux or WSL, use the setup wizard:
 
-Clone the framework, enter its directory, then check the toolchain:
+```sh
+curl -fsSL https://raw.githubusercontent.com/S33G/rvst/main/scripts/install.sh | sh
+```
+
+Read [the installer script](../scripts/install.sh) to see its checks and
+actions. It installs `rvst` and `cargo-rvst` using Cargo. It does not install
+plugins or change shell startup files. WSL gets an extra prompt and a link to
+the [WSL setup guide](wsl.md).
+
+Windows users can use Cargo directly from PowerShell after installing Rust:
+
+```powershell
+cargo install --git https://github.com/S33G/rvst.git --branch main --locked --force cargo-rvst
+```
+
+Confirm the command is available:
+
+```sh
+rvst --help
+```
+
+If the command is not found, add Cargo's `bin` directory to `PATH` as shown by
+the installer, then open a new terminal.
+
+## 2. Prepare a source checkout
+
+RVST crates are not published yet. Clone the framework so the generator can
+vendor a portable SDK snapshot into each new project:
 
 ```sh
 git clone https://github.com/S33G/rvst.git
 cd rvst
 rustup toolchain install 1.98.0 --component rustfmt --component clippy
-cargo run -p cargo-rvst -- doctor
+rvst doctor
 ```
 
 `doctor` reports prerequisites and setup commands. Native builds additionally
@@ -28,13 +54,13 @@ can be installed without compiling those native backends.
 > `which rustc`. Install targets for the compiler Cargo actually uses.
 > `RUSTUP_TOOLCHAIN` does not redirect a standalone Homebrew compiler.
 
-## 2. Run the RVST Debug tour
+## 3. Run the RVST Debug tour
 
 From the framework checkout, create the separate showcase repository, install its native
 bundles, and open its standalone UI and browser inspector:
 
 ```sh
-cargo run -p cargo-rvst -- showcase --path ../rvst-debug --sdk-path . --vendor-sdk --install --run --open
+rvst showcase --path ../rvst-debug --sdk-path . --vendor-sdk --install --run --open
 ```
 
 | Option | What it does |
@@ -78,7 +104,7 @@ cargo run -p plugin-standalone
 
 No globally installed RVST command is required.
 
-## 3. Preview the shared UI in a browser
+## 4. Preview the shared UI in a browser
 
 From the generated **plugin repository**, install the browser build tools:
 
@@ -100,37 +126,12 @@ host simulates parameter and state behavior; it does not run browser audio.
 Debug note playback is therefore disabled in this preview. Chrome's native
 inspector and this WASM preview are separate tools.
 
-## 4. Install the workbench
-
-From the **framework checkout**:
-
-```sh
-cargo install --path crates/cargo-rvst --locked
-cargo rvst
-```
-
-Bare `cargo rvst` opens Studio only on an interactive terminal. For scripts and
-agents, use explicit subcommands; see the [CLI reference](cli.md).
-
-A pinned Git install uses Cargo's normal mechanism:
-
-```sh
-RVST_REV=6967784f9bb84527b1a3b0f4963d71c991136051
-cargo install --git https://github.com/S33G/rvst.git --rev "$RVST_REV" cargo-rvst --locked
-```
-
-That revision is the initial verified preview; use another full commit SHA to
-choose a later version. The [verification report](validation-2026-10-30.md)
-records the exact earlier revision and profile used in the Git-install test.
-The `cargo install cargo-rvst --locked` registry command becomes available only
-after publication. Until then, generate with an explicit SDK checkout.
-
 ## 5. Create your own plugin
 
 From the **framework checkout**, after installing the workbench:
 
 ```sh
-cargo rvst new ../my-effect \
+rvst new ../my-effect \
   --template gain \
   --vendor 'Example Audio' \
   --id com.example.my-effect \

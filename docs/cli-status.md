@@ -4,8 +4,9 @@
 
 For commands and keyboard shortcuts, use the [CLI and TUI reference](cli.md).
 
-Implemented in `cargo-rvst` and shared `rvst-ops`. Installation is
-`cargo install --path crates/cargo-rvst --locked`; invocation is `cargo rvst`.
+Implemented in `cargo-rvst` and shared `rvst-ops`. Installation is described in
+the [setup wizard](../scripts/install.sh). It provides the direct `rvst`
+executable and keeps `cargo rvst` as a Cargo subcommand alias.
 
 ## Implemented capabilities
 

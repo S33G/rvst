@@ -19,6 +19,30 @@ deterministic simulated host; audio processing runs natively.*
 > the tested macOS configuration; [DAW and platform qualification is tracked
 > separately](docs/validation-2026-10-30.md).
 
+## Install RVST
+
+On macOS, Linux or WSL, run the setup wizard:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/S33G/rvst/main/scripts/install.sh | sh
+```
+
+[Read the installer script](scripts/install.sh) before running it. The wizard
+checks for Rust and Cargo, explains its WSL behavior, downloads the current
+`main` source, and builds the `rvst` and `cargo-rvst` executables into Cargo's
+`bin` directory. Cargo's `--force` replaces an existing install. It does not
+install audio plugins or edit your shell profile. If Cargo's bin directory is
+missing from `PATH`, the wizard prints the command to add it.
+
+Optional manual route, from an RVST checkout:
+
+```sh
+cargo install --path crates/cargo-rvst --locked --force
+```
+
+Then use `rvst --help` or `cargo rvst --help`. Windows users can use the manual
+Cargo route from PowerShell.
+
 ## What the SDK gives you
 
 Write your processor and editor once. RVST supplies the host adapters, development
@@ -52,7 +76,7 @@ cd rvst
 ```
 
 ```sh
-cargo run -p cargo-rvst -- showcase --path ../rvst-debug --sdk-path . --vendor-sdk --install --run --open
+rvst showcase --path ../rvst-debug --sdk-path . --vendor-sdk --install --run --open
 ```
 
 This installs VST3/CLAP bundles in your **user plugin folders**, starts the
@@ -94,11 +118,10 @@ templates, or Ctrl-Y to copy the displayed CLI command.
 *Actual TUI output from a 130 × 36 terminal, rendered with xterm.js. Telemetry
 comes from RVST Debug's native standalone instance. [Capture notes](docs/screenshots/README.md#terminal-workbench-captures).*
 
-Install the lightweight workbench from the framework checkout:
+Start Studio in an interactive terminal:
 
 ```sh
-cargo install --path crates/cargo-rvst --locked
-cargo rvst
+rvst
 ```
 
 ### The same operations for humans and agents
@@ -108,20 +131,20 @@ or JSONL for scripts, with versioned results and consistent exit codes.
 
 | Interface | Start here |
 | --- | --- |
-| Studio TUI | `cargo rvst` in an interactive terminal |
-| Agent / script | `cargo rvst --help` and `cargo rvst schema --format json` |
+| Studio TUI | `rvst` in an interactive terminal (`cargo rvst` also works) |
+| Agent / script | `rvst --help` and `rvst schema --format json` |
 | Generated RVST plugin project | `cargo build --locked`, then `cargo xtask bundle --release` |
 
 The tool does not build native audio or graphical backends during installation.
-A [pinned Git install](docs/getting-started.md#4-install-the-workbench) is also
-available. RVST uses Cargo's package installation and dependency resolution.
+The [setup wizard](scripts/install.sh) installs the command-line tools. RVST
+uses Cargo's package installation and dependency resolution.
 
 ## Make your own plugin
 
 From the **framework checkout**, with the workbench installed:
 
 ```sh
-cargo rvst new ../my-effect \
+rvst new ../my-effect \
   --template gain \
   --vendor Acme \
   --id com.acme.my-effect \
@@ -140,7 +163,7 @@ cargo xtask bundle --release
 | `instrument` | Voices, sample-offset notes, pressure and pitch bend |
 | `midi` | Event transformation, with pure-MIDI or audio pass-through variants |
 
-Use `cargo rvst templates inspect gain --format json` to discover inputs.
+Use `rvst templates inspect gain --format json` to discover inputs.
 [Template authoring](docs/templates.md) covers local and pinned Git templates.
 
 ## Preview the real Rust UI in a browser

@@ -3,8 +3,9 @@
 [Documentation](README.md) / CLI and TUI
 
 The CLI and Studio call the same Rust operation layer. Every Studio operation
-has an explicit command for scripts and agents. Run `cargo rvst --help`, or
-append `--help` to a subcommand, for the current parser's complete flags.
+has an explicit command for scripts and agents. Run `rvst --help` (or
+`cargo rvst --help`), then append `--help` to a subcommand for its complete
+flags.
 
 ## Choose a project
 

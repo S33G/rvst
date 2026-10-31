@@ -1,7 +1,16 @@
 use cargo_rvst::{Cli, Output};
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches};
 fn main() {
     let args = cargo_rvst::normalize_args(std::env::args_os());
+    let invoked_as_cargo_subcommand = args
+        .first()
+        .and_then(|arg| std::path::Path::new(arg).file_name())
+        .is_some_and(|name| name == "cargo-rvst");
+    let command_name = if invoked_as_cargo_subcommand {
+        "cargo rvst"
+    } else {
+        "rvst"
+    };
     let output = if args
         .windows(2)
         .any(|a| (a[0] == "--output" || a[0] == "--format") && a[1] == "jsonl")
@@ -21,7 +30,11 @@ fn main() {
     } else {
         Output::Human
     };
-    let cli = match Cli::try_parse_from(args) {
+    let cli = match Cli::command()
+        .name(command_name)
+        .try_get_matches_from(args)
+        .and_then(|matches| Cli::from_arg_matches(&matches))
+    {
         Ok(cli) => cli,
         Err(e) => {
             if matches!(
