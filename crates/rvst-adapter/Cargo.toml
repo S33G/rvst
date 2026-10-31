@@ -6,6 +6,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 [dependencies]
+crc32fast = "1"
 rvst-ui = { version = "0.1.0", path = "../rvst-ui" }
 rvst-core = { version = "0.1.0", path = "../rvst-core" }
 

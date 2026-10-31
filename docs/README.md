@@ -12,8 +12,10 @@ implemented behavior from tested platform and DAW combinations.
 | --- | --- |
 | Try RVST Debug and preview its Rust UI | [Getting started](getting-started.md) |
 | Use the terminal workbench or automate a task | [CLI and TUI reference](cli.md) |
+| Build with a coding agent and minimal context | [Agent skills](agent-skills.md) |
 | Create or share a starter | [Templates and project generation](templates.md) |
 | Change colors, typography and controls | [Shared UI and theme packs](themes.md) |
+| Undo control edits, resets and preset recalls | [Undo and redo](undo-redo.md) |
 | See native logs, inspect performance or replay a capture | [Diagnostics](diagnostics.md) |
 
 ## Understand the framework

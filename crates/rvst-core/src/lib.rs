@@ -3,6 +3,9 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+mod undo;
+pub use undo::{EditHistory, HistoryHost, HistoryRestoreGuard, HistorySnapshot, RestoredHistory};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Error(pub String);
 impl fmt::Display for Error {
@@ -395,6 +398,30 @@ pub trait Plugin: Send + 'static {
 /// Editor/control-thread interface. The implementation routes gestures through
 /// the format-specific host, rather than calling audio-thread DSP directly.
 pub trait EditorHost {
+    /// Optional instance-owned history, retained when an editor window closes.
+    fn edit_history(&self) -> Option<EditHistory> {
+        None
+    }
+    /// Next undo action, or `None` when no undo action is available.
+    fn undo_label(&self) -> Option<String> {
+        None
+    }
+    /// Next redo action, or `None` when unavailable or an edit is in progress.
+    fn redo_label(&self) -> Option<String> {
+        None
+    }
+    /// Replay the previous UI action. Returns whether an action was available.
+    /// This is an editor/control-thread operation.
+    fn undo(&mut self) -> Result<bool, Error> {
+        Ok(false)
+    }
+    /// Replay the last undone UI action on the editor/control thread.
+    fn redo(&mut self) -> Result<bool, Error> {
+        Ok(false)
+    }
+    /// Combine several UI edits into one undo step. Groups may be nested.
+    fn begin_edit_group(&mut self, _label: &str) {}
+    fn end_edit_group(&mut self) {}
     /// Optional per-instance plugin-owned, thread-safe editor context.
     fn editor_context(&self) -> Option<EditorContext> {
         None
@@ -406,4 +433,52 @@ pub trait EditorHost {
     fn end_edit(&mut self, id: u32);
     fn save_state(&mut self) -> Result<Vec<u8>, Error>;
     fn load_state(&mut self, data: &[u8]) -> Result<(), Error>;
+}
+
+impl<T: EditorHost + ?Sized> EditorHost for Box<T> {
+    fn edit_history(&self) -> Option<EditHistory> {
+        (**self).edit_history()
+    }
+    fn undo_label(&self) -> Option<String> {
+        (**self).undo_label()
+    }
+    fn redo_label(&self) -> Option<String> {
+        (**self).redo_label()
+    }
+    fn undo(&mut self) -> Result<bool, Error> {
+        (**self).undo()
+    }
+    fn redo(&mut self) -> Result<bool, Error> {
+        (**self).redo()
+    }
+    fn begin_edit_group(&mut self, label: &str) {
+        (**self).begin_edit_group(label)
+    }
+    fn end_edit_group(&mut self) {
+        (**self).end_edit_group()
+    }
+    fn editor_context(&self) -> Option<EditorContext> {
+        (**self).editor_context()
+    }
+    fn descriptor(&self) -> &'static PluginDescriptor {
+        (**self).descriptor()
+    }
+    fn parameter(&self, id: u32) -> Option<f64> {
+        (**self).parameter(id)
+    }
+    fn begin_edit(&mut self, id: u32) {
+        (**self).begin_edit(id)
+    }
+    fn set_parameter(&mut self, id: u32, value: f64) {
+        (**self).set_parameter(id, value)
+    }
+    fn end_edit(&mut self, id: u32) {
+        (**self).end_edit(id)
+    }
+    fn save_state(&mut self) -> Result<Vec<u8>, Error> {
+        (**self).save_state()
+    }
+    fn load_state(&mut self, data: &[u8]) -> Result<(), Error> {
+        (**self).load_state(data)
+    }
 }

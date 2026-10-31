@@ -178,6 +178,21 @@ platform limits, and [themes](themes.md) for shared controls.
 per-instance shared UI state or bounded command mailboxes. It must not expose
 mutable DSP.
 
+### Editor history
+
+Native and browser runners decorate `EditorHost` with `HistoryHost`, which
+records user edits and replays them through the same host notification methods.
+The trait also provides default-compatible `edit_history`, `undo_label`,
+`redo_label`, `undo`, `redo`, `begin_edit_group` and `end_edit_group` methods.
+Custom controls using ordinary edit gestures inherit history automatically.
+
+`EditHistory` is a shared, bounded, per-instance handle retained by native
+parameter mirrors. Native project state includes versioned undo and redo history;
+legacy states load with empty history. History storage runs on editor/control
+threads; audio callbacks do not acquire its lock. Host automation does not
+populate the history. See [undo and redo](undo-redo.md) for
+grouping, keyboard behavior, opaque presets and lifetime limits.
+
 ## Diagnostics, compatibility and replay
 
 `DiagnosticSink: Send` accepts

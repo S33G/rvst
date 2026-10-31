@@ -2693,6 +2693,7 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 name = "rvst-adapter"
 version = "0.1.0"
 dependencies = [
+ "crc32fast",
  "rvst-core",
  "rvst-devtools",
  "rvst-runtime",

@@ -1,0 +1,4 @@
+interface:
+  display_name: "RVST: Develop"
+  short_description: "Change RVST DSP, shared UI or SDK code"
+  default_prompt: "Use $rvst-develop to implement this RVST change."
