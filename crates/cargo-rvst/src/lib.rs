@@ -281,7 +281,7 @@ pub fn run_cli(command_name: &str) {
         Output::Human
     };
     let cli = match Cli::command()
-        .name(command_name)
+        .bin_name(command_name.to_owned())
         .try_get_matches_from(args)
         .and_then(|matches| Cli::from_arg_matches(&matches))
     {
