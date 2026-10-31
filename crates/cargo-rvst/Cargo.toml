@@ -1,6 +1,8 @@
 [package]
 repository.workspace = true
 name = "cargo-rvst"
+autobins = false
+default-run = "cargo-rvst"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,7 +14,7 @@ path = "src/main.rs"
 
 [[bin]]
 name = "rvst"
-path = "src/main.rs"
+path = "src/bin/rvst.rs"
 
 [dependencies]
 rvst-ops = { path = "../rvst-ops", version = "0.1.0" }

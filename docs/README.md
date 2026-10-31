@@ -11,14 +11,13 @@ implemented behavior from tested platform and DAW combinations.
 | Goal | Read |
 | --- | --- |
 | Try RVST Debug and preview its Rust UI | [Getting started](getting-started.md) |
-| Install the CLI in WSL | [WSL setup](wsl.md) |
 | Use the terminal workbench or automate a task | [CLI and TUI reference](cli.md) |
 | Build with a coding agent and minimal context | [Agent skills](agent-skills.md) |
 | Create or share a starter | [Templates and project generation](templates.md) |
 | Change colors, typography and controls | [Shared UI and theme packs](themes.md) |
 | Undo control edits, resets and preset recalls | [Undo and redo](undo-redo.md) |
 | See native logs, inspect performance or replay a capture | [Diagnostics](diagnostics.md) |
-| Run native audio in WSL and route sound to Windows | [Audio on WSL](wsl-audio.md) |
+| Install RVST in WSL or route native audio to Windows | [WSL setup and audio](wsl-audio.md) |
 
 ## Understand the framework
 

@@ -17,7 +17,7 @@ curl -fsSL https://raw.githubusercontent.com/S33G/rvst/main/scripts/install.sh |
 Read [the installer script](../scripts/install.sh) to see its checks and
 actions. It installs `rvst` and `cargo-rvst` using Cargo. It does not install
 plugins or change shell startup files. WSL gets an extra prompt and a link to
-the [WSL setup guide](wsl.md).
+the [WSL setup and audio guide](wsl-audio.md).
 
 Windows users can use Cargo directly from PowerShell after installing Rust:
 

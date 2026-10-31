@@ -3,7 +3,7 @@ set -eu
 
 REPOSITORY="https://github.com/S33G/rvst.git"
 BRANCH="main"
-GUIDE="https://github.com/S33G/rvst/blob/main/docs/wsl.md"
+GUIDE="https://github.com/S33G/rvst/blob/main/docs/wsl-audio.md"
 
 if [ -t 1 ]; then
     AMBER='\033[38;5;214m'
@@ -82,8 +82,8 @@ EOF
     exit 1
 fi
 
-cargo_home=${CARGO_HOME:-"${HOME:?HOME is not set}/.cargo"}
-bin_dir="$cargo_home/bin"
+install_root=${CARGO_INSTALL_ROOT:-${CARGO_HOME:-"${HOME:?HOME is not set}/.cargo"}}
+bin_dir="$install_root/bin"
 printf '\nRust toolchain: '
 rustc --version
 printf 'Install location: %s\n' "$bin_dir"

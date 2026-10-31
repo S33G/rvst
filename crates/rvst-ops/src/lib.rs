@@ -809,6 +809,12 @@ fn copy_sdk(source: &Path, dest: &Path) -> Result<()> {
             fs::copy(source.join("docs").join(rel), target)?;
         }
     }
+    let audio_env = source.join("scripts/audio-env.sh");
+    if audio_env.is_file() {
+        let target = dest.join("scripts/audio-env.sh");
+        fs::create_dir_all(target.parent().unwrap())?;
+        fs::copy(audio_env, target)?;
+    }
     Ok(())
 }
 

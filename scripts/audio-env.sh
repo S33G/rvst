@@ -6,10 +6,9 @@
 # WSLg's bundled PulseAudio socket, or PulseAudio/PipeWire on the Windows host
 # listening on TCP.
 #
-# The script is evaluation-safe: source it or capture the exports below.
-#   . scripts/audio-env.sh --verbose
-# or
-#   eval "$(scripts/audio-env.sh)"
+# The script prints shell-quoted exports. Capture its output, then evaluate
+# only after the script succeeds:
+#   rvst_audio_env="$(scripts/audio-env.sh --verbose)" && eval "$rvst_audio_env"
 #
 # A caller-exported PULSE_SERVER is preserved unchanged. Without a WSLg socket
 # and a reachable Windows host the script fails with a settable override name.
@@ -24,7 +23,10 @@ note() {
 
 report() {
     note "source: $1"
-    printf 'export %s=%s\n' "$2" "$3"
+    printf 'export %s=' "$2"
+    printf "'"
+    printf '%s' "$3" | sed "s/'/'\\\\''/g"
+    printf "'\n"
 }
 
 for arg in "$@"; do
@@ -33,6 +35,14 @@ for arg in "$@"; do
         *) printf '%s: unknown option %s\n' "$0" "$arg" >&2; exit 2 ;;
     esac
 done
+
+if ! {
+    [ -n "${WSL_DISTRO_NAME:-}" ] || [ -n "${WSL_INTEROP:-}" ] ||
+        { [ -r /proc/sys/kernel/osrelease ] && grep -qi microsoft /proc/sys/kernel/osrelease; }
+}; then
+    printf '%s: this helper is for WSL; run it inside a WSL distribution\n' "$0" >&2
+    exit 1
+fi
 
 # Callers often set PULSE_SERVER themselves (mirrored networking, custom ports).
 if [ -n "${PULSE_SERVER:-}" ]; then

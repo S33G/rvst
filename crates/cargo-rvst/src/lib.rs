@@ -257,6 +257,54 @@ pub fn normalize_args(
     }
     args
 }
+pub fn run_cli(command_name: &str) {
+    use clap::{CommandFactory, FromArgMatches};
+
+    let args = normalize_args(std::env::args_os());
+    let output = if args
+        .windows(2)
+        .any(|a| (a[0] == "--output" || a[0] == "--format") && a[1] == "jsonl")
+        || args
+            .iter()
+            .any(|a| a == "--output=jsonl" || a == "--format=jsonl")
+    {
+        Output::Jsonl
+    } else if args
+        .windows(2)
+        .any(|a| (a[0] == "--output" || a[0] == "--format") && a[1] == "json")
+        || args
+            .iter()
+            .any(|a| a == "--output=json" || a == "--format=json")
+    {
+        Output::Json
+    } else {
+        Output::Human
+    };
+    let cli = match Cli::command()
+        .name(command_name)
+        .try_get_matches_from(args)
+        .and_then(|matches| Cli::from_arg_matches(&matches))
+    {
+        Ok(cli) => cli,
+        Err(error) => {
+            if matches!(
+                error.kind(),
+                clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+            ) {
+                error.print().ok();
+                return;
+            }
+            std::process::exit(emit_error(
+                output,
+                rvst_ops::OpError::new("usage", error.to_string(), 2),
+            ));
+        }
+    };
+    let output = cli.output;
+    if let Err(error) = run(cli) {
+        std::process::exit(emit_error(output, error));
+    }
+}
 pub fn input_pairs(pairs: Vec<String>) -> Result<BTreeMap<String, String>> {
     let mut result = BTreeMap::new();
     for pair in pairs {

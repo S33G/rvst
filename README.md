@@ -32,7 +32,8 @@ checks for Rust and Cargo, explains its WSL behavior, downloads the current
 `main` source, and builds the `rvst` and `cargo-rvst` executables into Cargo's
 `bin` directory. Cargo's `--force` replaces an existing install. It does not
 install audio plugins or edit your shell profile. If Cargo's bin directory is
-missing from `PATH`, the wizard prints the command to add it.
+missing from `PATH`, the wizard prints the command to add it. Its WSL prompt
+links to the [WSL setup and audio guide](docs/wsl-audio.md).
 
 Optional manual route, from an RVST checkout:
 
